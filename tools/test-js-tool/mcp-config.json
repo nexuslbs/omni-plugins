@@ -1,0 +1,21 @@
+{
+  "servers": [
+    {
+      "name": "test-js-tool",
+      "transport": "stdio",
+      "command": "nodejs",
+      "args": [
+        "/opt/omni/plugins/mcp/test-js-tool/server.js"
+      ],
+      "env": {
+        "GREETING_NAME": "Omni"
+      },
+      "timeout_secs": 900,
+      "max_retries": 1,
+      "pool_size": 3,
+      "allowed_tools": [
+        "*"
+      ]
+    }
+  ]
+}

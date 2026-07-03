@@ -1,0 +1,15 @@
+{
+  "servers": [
+    {
+      "name": "test-rust-tool-2",
+      "transport": "stdio",
+      "args": [],
+      "timeout_secs": 30,
+      "max_retries": 1,
+      "pool_size": 1,
+      "allowed_tools": [
+        "*"
+      ]
+    }
+  ]
+}

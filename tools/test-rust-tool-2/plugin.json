@@ -1,0 +1,7 @@
+{
+  "name": "test-rust-tool-2",
+  "version": "0.1.0",
+  "type": "mcp",
+  "description": "Test Rust MCP tool server — hello tool that returns 'world'",
+  "config_schema": []
+}

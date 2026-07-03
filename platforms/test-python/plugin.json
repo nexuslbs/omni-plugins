@@ -1,0 +1,24 @@
+{
+  "name": "test-python",
+  "version": "0.1.0",
+  "type": "platform",
+  "description": "Test platform plugin for verifying the platform plugin protocol",
+  "entrypoint": {
+    "command": "python3",
+    "args": ["/opt/omni/plugins/platforms/test-python/platform.py"],
+    "transport": "stdio"
+  },
+  "capabilities": {
+    "inbound": false,
+    "outbound": true
+  },
+  "config_schema": [
+    {
+      "key": "PLATFORM_GREETING",
+      "label": "Platform Greeting",
+      "type": "string",
+      "default": "Hello from Python",
+      "description": "Greeting message shown in platform status"
+    }
+  ]
+}

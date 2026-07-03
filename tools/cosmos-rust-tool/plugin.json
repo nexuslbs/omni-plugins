@@ -1,0 +1,7 @@
+{
+  "name": "cosmos-rust-tool",
+  "version": "0.1.0",
+  "type": "mcp",
+  "description": "Cosmos Rust MCP tool server — hello tool that returns 'Cosmos'",
+  "config_schema": []
+}
