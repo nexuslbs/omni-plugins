@@ -1,0 +1,6 @@
+{
+  "name": "cron-echo",
+  "version": "0.1.0",
+  "type": "mcp",
+  "description": "Simple echo tool for testing multi-source cron plugin switching"
+}

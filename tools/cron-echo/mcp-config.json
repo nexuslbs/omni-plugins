@@ -1,0 +1,13 @@
+{
+  "servers": [
+    {
+      "name": "cron-echo",
+      "transport": "stdio",
+      "args": [],
+      "timeout_secs": 30,
+      "max_retries": 2,
+      "allowed_tools": ["*"],
+      "env": {}
+    }
+  ]
+}
