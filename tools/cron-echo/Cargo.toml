@@ -1,5 +1,5 @@
 [package]
-name = "cron-echo"
+name = "cron"
 version = "0.1.0"
 edition = "2021"
 description = "Simple echo MCP server for testing multi-source cron plugin switching"

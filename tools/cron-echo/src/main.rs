@@ -106,7 +106,7 @@ async fn main() -> Result<()> {
         .with_writer(std::io::stderr)
         .init();
 
-    tracing::info!("cron-echo MCP server starting");
+    tracing::info!("cron MCP server starting");
 
     let stdin = tokio::io::stdin();
     let reader = BufReader::new(stdin);
@@ -164,7 +164,7 @@ async fn handle_initialize<W: AsyncWriteExt + Unpin>(
     let result = InitializeResult {
         protocol_version: MCP_PROTOCOL_VERSION.to_string(),
         capabilities: ServerCapabilities { tools: Some(ToolCapabilities { list_changed: false }) },
-        server_info: Implementation { name: "cron-echo".into(), version: "0.1.0".into() },
+        server_info: Implementation { name: "cron".into(), version: "0.1.0".into() },
     };
     let response = JsonRpcSuccess {
         jsonrpc: "2.0".into(), id: req_id,
@@ -181,8 +181,8 @@ async fn handle_tools_list<W: AsyncWriteExt + Unpin>(
     writer: &mut tokio::io::BufWriter<W>, req_id: u64,
 ) -> Result<()> {
     let echo_tool = McpTool {
-        name: "cron-echo_echo".into(),
-        description: "[cron-echo] Echo back the input message".into(),
+        name: "cron_echo".into(),
+        description: "[cron] Echo back the input message".into(),
         input_schema: serde_json::json!({
             "type": "object",
             "properties": {
@@ -210,7 +210,7 @@ async fn handle_tools_call<W: AsyncWriteExt + Unpin>(
     writer: &mut tokio::io::BufWriter<W>, req_id: u64, params: &CallToolParams,
 ) -> Result<()> {
     match params.name.as_str() {
-        "cron-echo_echo" => {
+        "cron_echo" => {
             let msg = params.arguments.as_ref()
                 .and_then(|a| a.get("message"))
                 .and_then(|v| v.as_str())

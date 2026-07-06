@@ -1,7 +1,7 @@
 {
   "servers": [
     {
-      "name": "cron-echo",
+      "name": "cron",
       "transport": "stdio",
       "args": [],
       "timeout_secs": 30,

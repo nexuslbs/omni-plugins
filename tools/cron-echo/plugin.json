@@ -1,6 +1,11 @@
 {
-  "name": "cron-echo",
+  "name": "cron",
   "version": "0.1.0",
   "type": "mcp",
-  "description": "Simple echo tool for testing multi-source cron plugin switching"
+  "description": "Simple echo tool for testing multi-source cron plugin switching",
+  "entrypoint": {
+    "command": "./target/release/cron",
+    "args": [],
+    "transport": "stdio"
+  }
 }
