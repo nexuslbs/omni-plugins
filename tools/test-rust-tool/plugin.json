@@ -2,7 +2,7 @@
   "name": "test-rust-tool",
   "version": "0.1.0",
   "type": "mcp",
-  "description": "Test Rust MCP tool server — echo and wait tools with configurable greeting",
+  "description": "Test Rust tool for git-cache verification (updated!)",
   "config_schema": [
     {
       "key": "GREETING_NAME",

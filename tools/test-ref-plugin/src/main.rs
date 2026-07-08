@@ -16,9 +16,14 @@ async fn main() -> Result<()> {
     let mut stdin = BufReader::new(tokio::io::stdin());
     let mut line = String::new();
 
-    while stdin.read_line(&mut line).await? {
+    loop {
+        line.clear();
+        let n = stdin.read_line(&mut line).await?;
+        if n == 0 {
+            break;
+        }
+
         if line.trim().is_empty() {
-            line.clear();
             continue;
         }
 
