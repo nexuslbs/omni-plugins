@@ -328,7 +328,7 @@ def get_subtasks(cursor, thread_id):
 # ---------------------------------------------------------------------------
 
 def handle_generate(req_id, arguments, meta):
-    """Generate the full LLM prompt — matches Rust handle_generate_full()."""
+    """Generate the full LLM prompt as parts — matches Rust handle_generate_full()."""
     try:
         profile_name = (arguments or {}).get("profile_name", "default")
         platform = (arguments or {}).get("platform", "")
@@ -337,14 +337,44 @@ def handle_generate(req_id, arguments, meta):
         tool_names = (arguments or {}).get("tool_names", [])
         thread_id = (arguments or {}).get("thread_id") or (meta or {}).get("thread_id")
         channel_id = (arguments or {}).get("channel_id") or (meta or {}).get("channel_id")
-        plan_iteration = int((arguments or {}).get("plan_iteration", 0))
-        previous_plan = (arguments or {}).get("previous_plan")
-        include_planning = (arguments or {}).get("include_planning", False)
 
         data_dir = os.environ.get("OMNI_DIR", os.path.expanduser("~/.omniagent"))
 
-        # 1. Build system prompt
-        system_prompt = build_system_prompt(data_dir, profile_name, platform, system_message, tool_names)
+        # 1. Build system prompt parts
+        memory_raw, user_raw = load_memories(data_dir, profile_name)
+
+        parts = []
+        parts.append(build_dynamic_identity(tool_names))
+        parts.append(TOOL_GUIDANCE)
+        parts.append(f"Active Hermes profile: {profile_name}.")
+        if system_message:
+            parts.append(system_message)
+        hint = PLATFORM_HINTS.get(platform)
+        if hint:
+            parts.append(hint)
+
+        # Split into system (stable parts) vs memory vs soul
+        system_parts_before_soul = [p for p in parts if p != system_message]
+        soul = system_message if system_message else ""
+        system = "\n\n".join(system_parts_before_soul)
+
+        # Memory = MEMORY.md + USER.md content
+        memory = ""
+        if memory_raw:
+            max_chars = int(os.environ.get("MEMORY_MAX_CHARS", "5000"))
+            truncated = memory_raw[:max_chars]
+            if len(memory_raw) > max_chars:
+                truncated += f"\n\n[... truncated from {len(memory_raw)} to ~{max_chars} chars]"
+            header = f"## MEMORY (your personal notes) [100% — {len(memory_raw)}/{len(memory_raw)} chars]"
+            memory += f"{header}\n{truncated}\n"
+        if user_raw:
+            max_chars = int(os.environ.get("USER_MAX_CHARS", "1000"))
+            truncated = user_raw[:max_chars]
+            if len(user_raw) > max_chars:
+                truncated += f"\n\n[... truncated from {len(user_raw)} to ~{max_chars} chars]"
+            header = f"## USER PROFILE (who the user is) [100% — {len(user_raw)}/{len(user_raw)} chars]"
+            memory += f"{header}\n{truncated}"
+        memory = memory.strip()
 
         # 2. Build context blocks
         context_blocks = []
@@ -356,7 +386,7 @@ def handle_generate(req_id, arguments, meta):
             rows = get_thread_messages(cursor, thread_id, 10)
             if rows:
                 formatted = [f"[{r[2]}]: {truncate_str(r[3], 500)}" for r in rows]
-                context_blocks.append(f"Recent conversation history (current thread):\n" + "\n".join(formatted))
+                context_blocks.append("Recent conversation history (current thread):\n" + "\n".join(formatted))
 
         if channel_id is not None:
             channel_id = int(channel_id)
@@ -388,26 +418,15 @@ def handle_generate(req_id, arguments, meta):
 
         cursor.close()
 
-        # 3. Assemble full prompt
-        full_prompt = system_prompt
-        if context_blocks:
-            full_prompt += "\n\n═══ CONTEXT ═══\n"
-            full_prompt += "\n\n---\n\n".join(context_blocks)
-
-        # 4. Planning instructions
-        if include_planning:
-            planning = build_planning_prompt(tool_names, plan_iteration, 5, previous_plan, user_message)
-            full_prompt += f"\n\n═══════════════════════════════════════════\n"
-            full_prompt += planning
-
-        # 5. User message
-        if user_message and not include_planning:
-            full_prompt += f"\n\n## User Message\n\n{user_message}"
+        context = "\n\n---\n\n".join(context_blocks)
+        user = user_message
 
         result = json.dumps({
-            "full_prompt": full_prompt,
-            "context_blocks": len(context_blocks),
-            "total_chars": len(full_prompt),
+            "system": system,
+            "memory": memory,
+            "soul": soul,
+            "context": context,
+            "user": user,
         }, indent=2)
 
         send_json(make_success(req_id, make_tool_result(result)))
@@ -489,57 +508,42 @@ def handle_tools_list(req_id):
     tools = [
         {
             "name": "prompt-build",
-            "description": "[prompt-python] Generate the complete LLM prompt for a conversation, "
-                           "including system prompt (identity, tool guidance, memory, user profile), "
-                           "thread context (recent messages, summaries, skills, subtasks), "
-                           "and optional planning instructions. Returns the full prompt as a JSON string.",
+            "description": "[prompt-python] Generate the complete LLM prompt as 5 parts (system, memory, soul, context, user) for a conversation.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "profile_name": {
                         "type": "string",
-                        "description": "Profile name (default: default)",
+                        "description": "Profile name (default: default)"
                     },
                     "platform": {
                         "type": "string",
-                        "description": "Platform identifier (e.g. 'telegram', 'mattermost')",
+                        "description": "Platform identifier (e.g. 'telegram', 'mattermost')"
                     },
                     "system_message": {
                         "type": "string",
-                        "description": "Optional system message override",
+                        "description": "Optional system message override"
                     },
                     "user_message": {
                         "type": "string",
-                        "description": "User's message to include in the prompt",
+                        "description": "User's message to include in the prompt"
                     },
                     "tool_names": {
                         "type": "array",
                         "items": {"type": "string"},
-                        "description": "List of available tool names",
+                        "description": "List of available tool names"
                     },
                     "thread_id": {
                         "type": "integer",
-                        "description": "Thread ID for context assembly (recent messages, subtasks)",
+                        "description": "Thread ID for context assembly (recent messages, subtasks)"
                     },
                     "channel_id": {
                         "type": "integer",
-                        "description": "Channel ID for context assembly (summaries)",
-                    },
-                    "include_planning": {
-                        "type": "boolean",
-                        "description": "Whether to include planning instructions",
-                    },
-                    "plan_iteration": {
-                        "type": "integer",
-                        "description": "Planning iteration (0 = first pass)",
-                    },
-                    "previous_plan": {
-                        "type": "string",
-                        "description": "Previous plan text for iterative refinement",
-                    },
+                        "description": "Channel ID for context assembly (summaries)"
+                    }
                 },
-                "required": [],
-            },
+                "required": []
+            }
         },
         {
             "name": "prompt-compact",
