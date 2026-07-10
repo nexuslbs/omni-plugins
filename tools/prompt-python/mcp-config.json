@@ -1,0 +1,21 @@
+{
+  "servers": [
+    {
+      "name": "prompt-python",
+      "transport": "stdio",
+      "command": "python3",
+      "args": [
+        "/opt/omni/plugins/tools/prompt-python/server.py"
+      ],
+      "env": {
+        "OMNI_DIR": "/opt/data"
+      },
+      "timeout_secs": 900,
+      "max_retries": 1,
+      "pool_size": 3,
+      "allowed_tools": [
+        "*"
+      ]
+    }
+  ]
+}

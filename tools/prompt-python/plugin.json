@@ -1,0 +1,6 @@
+{
+  "name": "prompt-python",
+  "version": "0.1.0",
+  "type": "mcp",
+  "description": "Python MCP prompt server — generates full LLM prompts including system prompt, thread context, summaries, skills, and message compaction. Python equivalent of the Rust prompt plugin."
+}
