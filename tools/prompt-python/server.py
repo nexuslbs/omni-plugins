@@ -488,7 +488,7 @@ def handle_initialize(req_id):
 def handle_tools_list(req_id):
     tools = [
         {
-            "name": "prompt-python_generate",
+            "name": "prompt-build",
             "description": "[prompt-python] Generate the complete LLM prompt for a conversation, "
                            "including system prompt (identity, tool guidance, memory, user profile), "
                            "thread context (recent messages, summaries, skills, subtasks), "
@@ -542,7 +542,7 @@ def handle_tools_list(req_id):
             },
         },
         {
-            "name": "prompt-python_compact-messages",
+            "name": "prompt-compact",
             "description": "[prompt-python] Compact old assistant messages in a conversation to save tokens. "
                            "Removes redundant assistant tool-call pairs from the middle of the conversation "
                            "while preserving system messages and the most recent messages.",
@@ -618,9 +618,9 @@ def main():
                 tool_name = params.get("name", "")
                 arguments = params.get("arguments", {}) if isinstance(params, dict) else {}
 
-                if tool_name == "prompt-python_generate":
+                if tool_name == "prompt-build":
                     handle_generate(req_id, arguments, meta)
-                elif tool_name == "prompt-python_compact-messages":
+                elif tool_name == "prompt-compact":
                     handle_compact_messages(req_id, arguments)
                 else:
                     if req_id is not None:
