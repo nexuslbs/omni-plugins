@@ -1,11 +1,11 @@
 {
   "servers": [
     {
-      "name": "prompt-python",
+      "name": "prompt",
       "transport": "stdio",
       "command": "python3",
       "args": [
-        "/opt/omni/plugins/tools/prompt-python/server.py"
+        "/opt/omni/plugins/tools/prompt/server.py"
       ],
       "env": {
         "OMNI_DIR": "/opt/data"
