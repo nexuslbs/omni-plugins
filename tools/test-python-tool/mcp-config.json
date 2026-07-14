@@ -5,7 +5,7 @@
       "transport": "stdio",
       "command": "python3",
       "args": [
-        "/opt/workspace/omni-stack/plugins/tools/.remote/test-python-tool/tools/test-python-tool/server.py"
+        "/opt/omni/plugins/mcp/test-python-tool/server.py"
       ],
       "env": {
         "GREETING_NAME": "Omni"
@@ -13,7 +13,9 @@
       "timeout_secs": 900,
       "max_retries": 1,
       "pool_size": 3,
-      "allowed_tools": ["*"]
+      "allowed_tools": [
+        "*"
+      ]
     }
   ]
 }
