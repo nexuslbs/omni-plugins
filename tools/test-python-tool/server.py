@@ -101,9 +101,23 @@ def handle_tools_list(req_id):
                 "required": ["input"],
             },
         },
+        {
+            "name": "test-python-tool_lorem",
+            "description": "[test-python-tool] Slowly prints Latin lorem-ipsum style text, one word per second. Use this to test long-running tool execution with log streaming via read_task_logs.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "seconds": {
+                        "type": "number",
+                        "description": "How many seconds to run (1-120)"
+                    }
+                },
+                "required": ["seconds"],
+            },
+        },
     ]
     send_json(make_success(req_id, {"tools": tools}))
-    log.info("tools/list returned 4 tools")
+    log.info("tools/list returned 5 tools")
 
 
 def handle_wait(req_id, arguments):
@@ -217,6 +231,44 @@ def handle_save_datetime(req_id, arguments):
         log.warning("save-datetime tool failed to write to %s: %s", path, e)
 
 
+WORDS = [
+    "lorem", "ipsum", "dolor", "sit", "amet", "consectetur",
+    "adipiscing", "elit", "sed", "do", "eiusmod", "tempor",
+    "incididunt", "ut", "labore", "et", "dolore", "magna",
+    "aliqua", "ut", "enim", "ad", "minim", "veniam", "quis",
+    "nostrud", "exercitation", "ullamco", "laboris", "nisi",
+    "ut", "aliquip", "ex", "ea", "commodo", "consequat",
+]
+
+
+def handle_lorem(req_id, arguments):
+    seconds = int((arguments or {}).get("seconds", 10))
+    seconds = max(1, min(120, seconds))
+    log.info("lorem tool called: running for %s second(s)", seconds)
+
+    words = []
+    for i in range(seconds):
+        word = WORDS[i % len(WORDS)]
+        words.append(word)
+        print(f"[lorem] {word}", file=sys.stderr, flush=True)
+        if stdin_closed.is_set():
+            words.append("(cancelled)")
+            break
+        time.sleep(1)
+
+    full_text = " ".join(words)
+    log.info("lorem tool completed: %d words", len(words))
+    send_json(
+        make_success(
+            req_id,
+            {
+                "content": [{"type": "text", "text": full_text}],
+                "isError": False,
+            },
+        )
+    )
+
+
 def handle_test_error(req_id, arguments):
     input_val = (arguments or {}).get("input", "")
     text = f"Test error from python: {input_val}"
@@ -299,6 +351,8 @@ def main():
                     handle_save_datetime(req_id, arguments)
                 elif tool_name == "test-python-tool_test-error":
                     handle_test_error(req_id, arguments)
+                elif tool_name == "test-python-tool_lorem":
+                    handle_lorem(req_id, arguments)
                 else:
                     if req_id is not None:
                         send_json(
@@ -306,9 +360,6 @@ def main():
                                 req_id, -32602, f"Unknown tool: {tool_name}"
                             )
                         )
-
-        else:
-            log.warning("Unknown method: %s", method)
             if req_id is not None:
                 send_json(make_error(req_id, -32601, f"Method not found: {method}"))
 
