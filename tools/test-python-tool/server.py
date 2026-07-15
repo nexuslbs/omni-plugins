@@ -105,7 +105,7 @@ def handle_tools_list(req_id):
                 },
                 "required": ["input"],
             },
-        
+        },
         {
             "name": "test-python-tool_lorem",
             "description": "[test-python-tool] Slowly prints Latin lorem-ipsum style text, one word per second. Use this to test long-running tool execution with log streaming via read_task_logs.",
