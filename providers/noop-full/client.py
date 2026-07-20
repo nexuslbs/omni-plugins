@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""noop-full — standalone provider implementing the omniagent provider plugin protocol.
+"""noop-full : standalone provider implementing the omniagent provider plugin protocol.
 
 Communicates via JSON-lines over stdin/stdout. No api_mode dependency on omniagent.
 

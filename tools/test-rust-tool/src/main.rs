@@ -16,6 +16,7 @@ const MCP_PROTOCOL_VERSION: &str = "2025-03-26";
 /// A JSON-RPC request.
 #[derive(Debug, Deserialize)]
 struct JsonRpcRequest {
+    #[allow(dead_code)]
     jsonrpc: String,
     #[serde(default)]
     id: Option<u64>,
@@ -127,7 +128,7 @@ enum ToolContent {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    // Initialize tracing — log to stderr
+    // Initialize tracing : log to stderr
     tracing_subscriber::fmt()
         .with_env_filter(EnvFilter::from_default_env())
         .with_writer(std::io::stderr)
@@ -382,7 +383,7 @@ async fn handle_wait<W: AsyncWriteExt + Unpin>(
 
     tracing::info!("wait tool called: sleeping for {duration_secs} second(s)");
 
-    // Sleep for the requested duration (single sleep — no stdin conflict).
+    // Sleep for the requested duration (single sleep : no stdin conflict).
     // Do NOT create a new stdin BufReader here: the main loop already owns
     // the stdin reader, and a second BufReader on tokio::io::stdin() shares
     // the same fd, causing data loss when the next queued request arrives

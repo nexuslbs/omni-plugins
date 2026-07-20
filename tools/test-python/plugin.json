@@ -1,8 +1,8 @@
 {
-  "name": "test-python-tool",
+  "name": "test-python",
   "version": "0.1.0",
   "type": "mcp",
-  "description": "Test Python MCP tool server — echo and wait tools with configurable greeting",
+  "description": "Test Python MCP tool server : echo and wait tools with configurable greeting",
   "config_schema": [
     {
       "key": "GREETING_NAME",

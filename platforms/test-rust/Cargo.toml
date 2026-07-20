@@ -2,7 +2,7 @@
 name = "test-rust-platform"
 version = "0.1.0"
 edition = "2021"
-description = "Test Rust platform plugin for OmniAgent — implements the platform plugin protocol"
+description = "Test Rust platform plugin for OmniAgent : implements the platform plugin protocol"
 
 [dependencies]
 tokio = { version = "1", features = ["full"] }

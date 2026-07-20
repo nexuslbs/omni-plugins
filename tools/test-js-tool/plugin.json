@@ -2,7 +2,7 @@
   "name": "test-js-tool",
   "version": "0.1.0",
   "type": "mcp",
-  "description": "Test JS MCP tool server — echo and wait tools with configurable greeting",
+  "description": "Test JS MCP tool server : echo and wait tools with configurable greeting",
   "config_schema": [
     {
       "key": "GREETING_NAME",

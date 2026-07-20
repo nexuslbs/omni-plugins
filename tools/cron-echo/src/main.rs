@@ -8,6 +8,7 @@ const MCP_PROTOCOL_VERSION: &str = "2025-03-26";
 
 #[derive(Debug, Deserialize)]
 struct JsonRpcRequest {
+    #[allow(dead_code)]
     jsonrpc: String,
     #[serde(default)]
     id: Option<u64>,
@@ -154,6 +155,8 @@ async fn main() -> Result<()> {
             }
         }
     }
+
+    let _ = &initialized;
 
     Ok(())
 }

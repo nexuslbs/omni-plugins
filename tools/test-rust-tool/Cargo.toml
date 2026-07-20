@@ -2,7 +2,7 @@
 name = "test-rust-tool"
 version = "0.1.0"
 edition = "2021"
-description = "Test Rust MCP server for OmniAgent — implements a simple 'wait' tool"
+description = "Test Rust MCP server for OmniAgent : implements a simple 'wait' tool"
 
 [dependencies]
 tokio = { version = "1", features = ["full"] }

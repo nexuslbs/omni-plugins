@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""test-python-tool MCP server — implements standard MCP JSON-RPC over stdio.
+"""test-python MCP server : implements standard MCP JSON-RPC over stdio.
 
 Tools:
   - wait: Sleep for N seconds (default 900)
@@ -18,7 +18,7 @@ from datetime import datetime, timezone
 
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s [test-python-tool] %(levelname)s %(message)s",
+    format="%(asctime)s [test-python] %(levelname)s %(message)s",
     stream=sys.stderr,
 )
 import random
@@ -50,17 +50,17 @@ def handle_initialize(req_id):
     result = {
         "protocolVersion": MCP_PROTOCOL_VERSION,
         "capabilities": {"tools": {"listChanged": False}},
-        "serverInfo": {"name": "test-python-tool", "version": "0.1.0"},
+        "serverInfo": {"name": "test-python", "version": "0.1.0"},
     }
     send_json(make_success(req_id, result))
-    log.info("Initialized: test-python-tool v0.1.0")
+    log.info("Initialized: test-python v0.1.0")
 
 
 def handle_tools_list(req_id):
     tools = [
         {
-            "name": "test-python-tool_wait",
-            "description": "[test-python-tool] Sleep for a specified duration in seconds (default 900 = 15 minutes)",
+            "name": "test-python_wait",
+            "description": "[test-python] Sleep for a specified duration in seconds (default 900 = 15 minutes)",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -74,8 +74,8 @@ def handle_tools_list(req_id):
             },
         },
         {
-            "name": "test-python-tool_echo",
-            "description": "[test-python-tool] Echo back a greeting: 'Hello, {input}'",
+            "name": "test-python_echo",
+            "description": "[test-python] Echo back a greeting: 'Hello, {input}'",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -85,8 +85,8 @@ def handle_tools_list(req_id):
             },
         },
         {
-            "name": "test-python-tool_save-datetime",
-            "description": "[test-python-tool] Write the current date/time (ISO 8601 format) to a file",
+            "name": "test-python_save-datetime",
+            "description": "[test-python] Write the current date/time (ISO 8601 format) to a file",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -96,8 +96,8 @@ def handle_tools_list(req_id):
             },
         },
         {
-            "name": "test-python-tool_test-error",
-            "description": "[test-python-tool] Return a test error: 'Test error from python: <input>'",
+            "name": "test-python_test-error",
+            "description": "[test-python] Return a test error: 'Test error from python: <input>'",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -107,8 +107,8 @@ def handle_tools_list(req_id):
             },
         },
         {
-            "name": "test-python-tool_lorem",
-            "description": "[test-python-tool] Slowly prints Latin lorem-ipsum style text, one word per second. Use this to test long-running tool execution with log streaming via read_task_logs.",
+            "name": "test-python_lorem",
+            "description": "[test-python] Slowly prints Latin lorem-ipsum style text, one word per second. Use this to test long-running tool execution with log streaming via read_task_logs.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -283,7 +283,7 @@ def handle_lorem(req_id, arguments):
 def main():
     global initialized
 
-    log.info("test-python-tool MCP server starting (PID=%d)", os.getpid())
+    log.info("test-python MCP server starting (PID=%d)", os.getpid())
 
     # Background thread to detect stdin EOF
     def monitor_stdin():
@@ -338,15 +338,15 @@ def main():
                 tool_name = params.get("name", "")
                 arguments = params.get("arguments", {})
 
-                if tool_name == "test-python-tool_wait":
+                if tool_name == "test-python_wait":
                     handle_wait(req_id, arguments)
-                elif tool_name == "test-python-tool_echo":
+                elif tool_name == "test-python_echo":
                     handle_echo(req_id, arguments)
-                elif tool_name == "test-python-tool_save-datetime":
+                elif tool_name == "test-python_save-datetime":
                     handle_save_datetime(req_id, arguments)
-                elif tool_name == "test-python-tool_test-error":
+                elif tool_name == "test-python_test-error":
                     handle_test_error(req_id, arguments)
-                elif tool_name == "test-python-tool_lorem":
+                elif tool_name == "test-python_lorem":
                     handle_lorem(req_id, arguments)
                 else:
                     if req_id is not None:
@@ -361,7 +361,7 @@ def main():
             if req_id is not None:
                 send_json(make_error(req_id, -32601, f"Method not found: {method}"))
 
-    log.info("test-python-tool MCP server shutting down (stdin closed)")
+    log.info("test-python MCP server shutting down (stdin closed)")
 
 
 if __name__ == "__main__":

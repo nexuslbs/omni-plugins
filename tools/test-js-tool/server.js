@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 /**
- * test-js-tool MCP server — implements standard MCP JSON-RPC over stdio.
+ * test-js-tool MCP server : implements standard MCP JSON-RPC over stdio.
  *
  * Tools:
  *   - test-js-tool_wait: Sleep for N seconds (default 900)

@@ -5,7 +5,9 @@
   "description": "Test platform plugin for verifying the platform plugin protocol",
   "entrypoint": {
     "command": "python3",
-    "args": ["/opt/omni/plugins/platforms/test-python/platform.py"],
+    "args": [
+      "platform.py"
+    ],
     "transport": "stdio"
   },
   "capabilities": {

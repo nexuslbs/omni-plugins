@@ -13,6 +13,7 @@ const MCP_PROTOCOL_VERSION: &str = "2025-03-26";
 
 #[derive(Debug, Deserialize)]
 struct JsonRpcRequest {
+    #[allow(dead_code)]
     jsonrpc: String,
     #[serde(default)]
     id: Option<u64>,
@@ -243,7 +244,7 @@ async fn handle_tools_list<W: AsyncWriteExt + Unpin>(
 ) -> Result<()> {
     let hello_tool = McpTool {
         name: "hello".to_string(),
-        description: "[test-rust-tool-2] Says 'world' — a simple test tool for verifying plugin architecture".to_string(),
+        description: "[test-rust-tool-2] Says 'world' : a simple test tool for verifying plugin architecture".to_string(),
         input_schema: serde_json::json!({
             "type": "object",
             "properties": {},

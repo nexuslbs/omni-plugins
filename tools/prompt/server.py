@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""prompt-python MCP server — Python equivalent of the Rust prompt plugin.
+"""prompt-python MCP server : Python equivalent of the Rust prompt plugin.
 
 Tools:
   - generate: Build the complete LLM prompt (system prompt + thread context +
@@ -90,34 +90,34 @@ def truncate_str(s, max_chars):
     return s[:max_chars] + "..."
 
 # ---------------------------------------------------------------------------
-# Prompt building — identical to Rust prompt_builder.rs
+# Prompt building : identical to Rust prompt_builder.rs
 # ---------------------------------------------------------------------------
 
 TOOL_GUIDANCE = (
     "TOOL USE RULES (fail the task if you violate these):\n"
-    "1. CALL TOOLS DIRECTLY — Do NOT search the filesystem, read plugin configs, "
+    "1. CALL TOOLS DIRECTLY : Do NOT search the filesystem, read plugin configs, "
     "read mcp-config.json files, inspect server.py files, or look at docker-compose files "
     "to discover what tools exist or how to call them. The function-calling API already "
     "shows you every available tool with its name, description, and parameters. "
     "If you need information about available tools, use the list_tool_details tool. "
     "Reading config files to find tools is always wrong and wastes turns.\n"
-    "2. SEARCH BEFORE QUERY — Use search (search_messages, search_wiki) before "
+    "2. SEARCH BEFORE QUERY : Use search (search_messages, search_wiki) before "
     "query_database for text/vector searches. Only use query_database for structured "
     "aggregations (counts, sums, averages, groupings).\n"
-    "3. WRITE SINGLE-FIELD FILES — When using filesystem_write_tool, write complete "
+    "3. WRITE SINGLE-FIELD FILES : When using filesystem_write_tool, write complete "
     "single-field content files. Do NOT write partial files and append later. Do NOT "
     "write placeholder content expecting to \"fill in\" values afterward.\n"
-    "4. RENAME INSTEAD OF RECREATE — When a file/directory already exists and you "
+    "4. RENAME INSTEAD OF RECREATE : When a file/directory already exists and you "
     "need to change its name, rename it (filesystem_move). Do NOT delete and recreate.\n"
-    "5. NO POLLING — Do NOT repeatedly check the same condition. If you're waiting "
+    "5. NO POLLING : Do NOT repeatedly check the same condition. If you're waiting "
     "for something, use the appropriate tool once and wait for the result.\n"
-    "6. TOGGLE INSTEAD OF CONDITIONAL — For boolean/config values, use the toggle "
+    "6. TOGGLE INSTEAD OF CONDITIONAL : For boolean/config values, use the toggle "
     "endpoint. Do NOT read the current value, compute the negation, and write it back.\n"
-    "7. COMPLETE WORK — Before presenting results, finish ALL steps. Do not interrupt "
+    "7. COMPLETE WORK : Before presenting results, finish ALL steps. Do not interrupt "
     "your work to show intermediate progress unless asked.\n"
-    "8. CONFIRM DESTRUCTIVE ACTIONS — Before delete/overwrite/stop operations, "
+    "8. CONFIRM DESTRUCTIVE ACTIONS : Before delete/overwrite/stop operations, "
     "present what you will do and wait for confirmation.\n"
-    "9. SKIP ON FAILURE — If an operation fails (network error, not found, bad request), "
+    "9. SKIP ON FAILURE : If an operation fails (network error, not found, bad request), "
     "try once more with a different approach, then move on. Do NOT retry the same "
     "failing call more than once. There is no hidden state that changes between retries."
 )
@@ -127,7 +127,7 @@ PLATFORM_HINTS = {
         "You are on a text messaging communication platform, Telegram. "
         "Standard markdown is automatically converted to Telegram format. Supported: **bold**, "
         "*italic*, ~~strikethrough~~, ||spoiler||, `inline code`, ```code blocks```, [links](url), "
-        "and ## headers. Telegram has NO table syntax — prefer bullet lists or labeled key: value "
+        "and ## headers. Telegram has NO table syntax : prefer bullet lists or labeled key: value "
         "pairs over pipe tables (any tables you do emit are auto-rewritten into row-group bullets, "
         "which you can produce directly for cleaner output). You can send media files natively: "
         "to deliver a file to the user, include MEDIA:/absolute/path/to/file in your response. "
@@ -143,7 +143,7 @@ PLATFORM_HINTS = {
 }
 
 def build_dynamic_identity(tool_names):
-    """Build identity string — same as Rust but with '(Python)' marker."""
+    """Build identity string : same as Rust but with '(Python)' marker."""
     tool_set = set(tool_names)
 
     has_fetch = "fetch" in tool_set
@@ -183,22 +183,22 @@ def build_dynamic_identity(tool_names):
     tool_list = ", ".join(parts) if parts else ", ".join(tool_names)
 
     # KEY DIFFERENCE from Rust: "(Python)" marker in identity line
-    return f"You are OmniAgent (Python) — precise, efficient, autonomous. Your tools: {tool_list}. Use minimum roundtrips. If a tool fails, move on — don't retry more than twice."
+    return f"You are OmniAgent (Python) : precise, efficient, autonomous. Your tools: {tool_list}. Use minimum roundtrips. If a tool fails, move on : don't retry more than twice."
 
 def build_system_prompt(data_dir, profile_name, platform, system_message, tool_names):
-    """Build the three-tier system prompt — matches Rust build_system_prompt()."""
+    """Build the three-tier system prompt : matches Rust build_system_prompt()."""
     parts = []
 
-    # Tier 1 — Stable
+    # Tier 1 : Stable
     parts.append(build_dynamic_identity(tool_names))
     parts.append(TOOL_GUIDANCE)
     parts.append(f"Active Hermes profile: {profile_name}.")
 
-    # Tier 2 — Context / optional system message
+    # Tier 2 : Context / optional system message
     if system_message:
         parts.append(system_message)
 
-    # Tier 3 — Volatile
+    # Tier 3 : Volatile
     hint = PLATFORM_HINTS.get(platform)
     if hint:
         parts.append(hint)
@@ -210,7 +210,7 @@ def build_system_prompt(data_dir, profile_name, platform, system_message, tool_n
         truncated = memory_raw[:max_chars]
         if len(memory_raw) > max_chars:
             truncated += f"\n\n[... truncated from {len(memory_raw)} to ~{max_chars} chars]"
-        header = f"## MEMORY (your personal notes) [{100}% — {len(memory_raw)}/{len(memory_raw)} chars]"
+        header = f"## MEMORY (your personal notes) [{100}% : {len(memory_raw)}/{len(memory_raw)} chars]"
         parts.append(f"{header}\n{truncated}")
 
     if user_raw:
@@ -218,13 +218,13 @@ def build_system_prompt(data_dir, profile_name, platform, system_message, tool_n
         truncated = user_raw[:max_chars]
         if len(user_raw) > max_chars:
             truncated += f"\n\n[... truncated from {len(user_raw)} to ~{max_chars} chars]"
-        header = f"## USER PROFILE (who the user is) [{100}% — {len(user_raw)}/{len(user_raw)} chars]"
+        header = f"## USER PROFILE (who the user is) [{100}% : {len(user_raw)}/{len(user_raw)} chars]"
         parts.append(f"{header}\n{truncated}")
 
     return "\n\n".join(parts)
 
 def build_planning_prompt(tool_names, plan_iteration, max_iterations, previous_plan, user_message):
-    """Build planning prompt — matches Rust build_planning_prompt()."""
+    """Build planning prompt : matches Rust build_planning_prompt()."""
     tool_list = f"Your available tools: {', '.join(tool_names)}." if tool_names else ""
 
     if plan_iteration == 0:
@@ -328,7 +328,7 @@ def get_subtasks(cursor, thread_id):
 # ---------------------------------------------------------------------------
 
 def handle_generate(req_id, arguments, meta):
-    """Generate the full LLM prompt as parts — matches Rust handle_generate_full()."""
+    """Generate the full LLM prompt as parts : matches Rust handle_generate_full()."""
     try:
         profile_name = (arguments or {}).get("profile_name", "default")
         platform = (arguments or {}).get("platform", "")
@@ -365,14 +365,14 @@ def handle_generate(req_id, arguments, meta):
             truncated = memory_raw[:max_chars]
             if len(memory_raw) > max_chars:
                 truncated += f"\n\n[... truncated from {len(memory_raw)} to ~{max_chars} chars]"
-            header = f"## MEMORY (your personal notes) [100% — {len(memory_raw)}/{len(memory_raw)} chars]"
+            header = f"## MEMORY (your personal notes) [100% : {len(memory_raw)}/{len(memory_raw)} chars]"
             memory += f"{header}\n{truncated}\n"
         if user_raw:
             max_chars = int(os.environ.get("USER_MAX_CHARS", "1000"))
             truncated = user_raw[:max_chars]
             if len(user_raw) > max_chars:
                 truncated += f"\n\n[... truncated from {len(user_raw)} to ~{max_chars} chars]"
-            header = f"## USER PROFILE (who the user is) [100% — {len(user_raw)}/{len(user_raw)} chars]"
+            header = f"## USER PROFILE (who the user is) [100% : {len(user_raw)}/{len(user_raw)} chars]"
             memory += f"{header}\n{truncated}"
         memory = memory.strip()
 
@@ -437,7 +437,7 @@ def handle_generate(req_id, arguments, meta):
 
 
 def handle_compact_messages(req_id, arguments):
-    """Compact old assistant messages — matches Rust handle_compact_messages()."""
+    """Compact old assistant messages : matches Rust handle_compact_messages()."""
     try:
         messages = (arguments or {}).get("messages", [])
         keep_recent = int((arguments or {}).get("keep_recent", 3))

@@ -1,14 +1,13 @@
 {
   "servers": [
     {
-      "name": "test-python-tool",
+      "name": "test-python",
       "transport": "stdio",
       "command": "python3",
       "args": ["server.py"],
       "env": {"GREETING_NAME": "Omni"},
       "timeout_secs": 900,
       "max_retries": 1,
-      "pool_size": 3,
       "allowed_tools": ["*"]
     }
   ]
