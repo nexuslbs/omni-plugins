@@ -206,7 +206,24 @@ async fn main() -> Result<()> {
                     let params = request.params.unwrap_or_default();
                     let call_params: CallToolParams =
                         serde_json::from_value(params).context("Invalid tools/call params")?;
-                    handle_tools_call(&mut writer, id, &call_params).await?;
+
+                    // Spawn long-running wait calls so the main stdin loop is not blocked
+                    if call_params.name == "test-rust-tool_wait" {
+                        let duration_secs = call_params
+                            .arguments
+                            .as_ref()
+                            .and_then(|a| a.get("duration_secs"))
+                            .and_then(|v| v.as_u64())
+                            .unwrap_or(900);
+                        tokio::spawn(async move {
+                            let mut w = tokio::io::BufWriter::new(tokio::io::stdout());
+                            if let Err(e) = send_wait_response(&mut w, id, duration_secs).await {
+                                tracing::error!("[spawned] wait tool error: {:?}", e);
+                            }
+                        });
+                    } else {
+                        handle_tools_call(&mut writer, id, &call_params).await?;
+                    }
                 }
             }
             _ => {
@@ -365,6 +382,35 @@ async fn handle_tools_call<W: AsyncWriteExt + Unpin>(
         }
     }
 
+    Ok(())
+}
+
+/// Spawned variant of the wait handler that creates its own stdout writer.
+/// Called from tokio::spawn in the main dispatch — does NOT block the stdin loop.
+async fn send_wait_response(
+    writer: &mut tokio::io::BufWriter<tokio::io::Stdout>,
+    req_id: u64,
+    duration_secs: u64,
+) -> Result<()> {
+    tracing::info!("[spawned] wait tool: sleeping for {duration_secs} second(s)");
+    tokio::time::sleep(Duration::from_secs(duration_secs)).await;
+    let content = serde_json::json!([{
+        "type": "text",
+        "text": format!("Waited for {duration_secs} seconds"),
+    }]);
+    let response = JsonRpcSuccess {
+        jsonrpc: "2.0".to_string(),
+        id: req_id,
+        result: serde_json::json!({
+            "content": content,
+            "isError": false,
+        }),
+    };
+    let json = serde_json::to_string(&response)?;
+    writer.write_all(json.as_bytes()).await?;
+    writer.write_all(b"\n").await?;
+    writer.flush().await?;
+    tracing::info!("[spawned] wait tool completed: {duration_secs} second(s)");
     Ok(())
 }
 

@@ -31,6 +31,7 @@ log = logging.getLogger("mcp")
 MCP_PROTOCOL_VERSION = "2025-03-26"
 initialized = False
 stdin_closed = threading.Event()
+stdout_lock = threading.Lock()
 
 
 def send_json(obj):
@@ -127,7 +128,7 @@ def handle_tools_list(req_id):
 
 def handle_wait(req_id, arguments):
     duration_secs = arguments.get("duration_secs", 900) if arguments else 900
-    log.info("wait tool called: sleeping for %s second(s)", duration_secs)
+    log.info("wait tool called: sleeping for %s second(s) in thread", duration_secs)
 
     slept = 0
     cancelled = False
@@ -139,37 +140,39 @@ def handle_wait(req_id, arguments):
         slept += 1
 
     if cancelled:
-        send_json(
-            make_success(
-                req_id,
-                {
-                    "content": [
-                        {
-                            "type": "text",
-                            "text": f"Waited for {slept} second(s) before cancellation",
-                        }
-                    ],
-                    "isError": False,
-                },
+        with stdout_lock:
+            send_json(
+                make_success(
+                    req_id,
+                    {
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": f"Waited for {slept} second(s) before cancellation",
+                            }
+                        ],
+                        "isError": False,
+                    },
+                )
             )
-        )
         log.info("wait tool cancelled after %s second(s)", slept)
         sys.exit(0)
     else:
-        send_json(
-            make_success(
-                req_id,
-                {
-                    "content": [
-                        {
-                            "type": "text",
-                            "text": f"Waited for {duration_secs} seconds",
-                        }
-                    ],
-                    "isError": False,
-                },
+        with stdout_lock:
+            send_json(
+                make_success(
+                    req_id,
+                    {
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": f"Waited for {duration_secs} seconds",
+                            }
+                        ],
+                        "isError": False,
+                    },
+                )
             )
-        )
         log.info("wait tool completed: slept for %s second(s)", duration_secs)
 
 
@@ -339,15 +342,17 @@ def main():
                 arguments = params.get("arguments", {})
 
                 if tool_name == "test-python_wait":
-                    handle_wait(req_id, arguments)
+                    t = threading.Thread(target=handle_wait, args=(req_id, arguments), daemon=True)
+                    t.start()
+                elif tool_name == "test-python_lorem":
+                    t = threading.Thread(target=handle_lorem, args=(req_id, arguments), daemon=True)
+                    t.start()
                 elif tool_name == "test-python_echo":
                     handle_echo(req_id, arguments)
                 elif tool_name == "test-python_save-datetime":
                     handle_save_datetime(req_id, arguments)
                 elif tool_name == "test-python_test-error":
                     handle_test_error(req_id, arguments)
-                elif tool_name == "test-python_lorem":
-                    handle_lorem(req_id, arguments)
                 else:
                     if req_id is not None:
                         send_json(
