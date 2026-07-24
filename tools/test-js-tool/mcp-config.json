@@ -10,7 +10,6 @@
       },
       "timeout_secs": 900,
       "max_retries": 1,
-      "pool_size": 3,
       "allowed_tools": ["*"]
     }
   ]
