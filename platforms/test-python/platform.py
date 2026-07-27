@@ -127,6 +127,23 @@ def main():
             sys.stdout.write(json.dumps(response) + "\n")
             sys.stdout.flush()
 
+        elif method == "react":
+            params = request.get("params", {})
+            resource = params.get("resource_identifier", "")
+            external_id = params.get("external_id", "")
+            emoji = params.get("emoji", "")
+            log.info("React %s to %s in %s", emoji, external_id, resource)
+
+            response = {
+                "id": req_id,
+                "result": {
+                    "reacted": True,
+                    "source": "Python",
+                },
+            }
+            sys.stdout.write(json.dumps(response) + "\n")
+            sys.stdout.flush()
+
         else:
             log.warning("Unknown method: %s", method)
             if req_id is not None:
