@@ -1,0 +1,23 @@
+{
+  "name": "test-js",
+  "type": "platform",
+  "capabilities": {
+    "inbound": true,
+    "outbound": true
+  },
+  "entrypoint": {
+    "command": "node",
+    "args": ["server.js"],
+    "transport": "stdio"
+  },
+  "config_schema": {
+    "type": "object",
+    "properties": {
+      "PLATFORM_GREETING": {
+        "type": "string",
+        "default": "Hello from JS",
+        "description": "Greeting message for the platform"
+      }
+    }
+  }
+}
