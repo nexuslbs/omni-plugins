@@ -191,6 +191,28 @@ fn handle_delete_message(id: u64, params: Option<Value>) -> PluginResponse {
     make_success(id, serde_json::json!({"deleted": true}))
 }
 
+fn handle_react(id: u64, params: Option<Value>) -> PluginResponse {
+    let resource = params
+        .as_ref()
+        .and_then(|p| p.get("resource_identifier"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    let external_id = params
+        .as_ref()
+        .and_then(|p| p.get("external_id"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    let emoji = params
+        .as_ref()
+        .and_then(|p| p.get("emoji"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+
+    tracing::info!("React {} on {} in {}", emoji, external_id, resource);
+
+    make_success(id, serde_json::json!({"reacted": true}))
+}
+
 // ---------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------
@@ -241,6 +263,7 @@ async fn main() -> Result<()> {
             "deliver" => handle_deliver(req_id, request.params, &mut message_counter),
             "edit_message" => handle_edit_message(req_id, request.params),
             "delete_message" => handle_delete_message(req_id, request.params),
+            "react" => handle_react(req_id, request.params),
             other => {
                 tracing::warn!("Unknown method: {}", other);
                 make_error(req_id, -1, &format!("Unknown method: {}", other))
