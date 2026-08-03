@@ -1,0 +1,41 @@
+# Remote plugin registry for the omni-plugins repository.
+# Lists every plugin shipped in this repo, grouped by plugin type.
+tools:
+  cosmos-rust-tool:
+    url: https://github.com/nexuslbs/omni-plugins.git
+    path: tools/cosmos-rust-tool
+  cron-echo:
+    url: https://github.com/nexuslbs/omni-plugins.git
+    path: tools/cron-echo
+  prompt:
+    url: https://github.com/nexuslbs/omni-plugins.git
+    path: tools/prompt
+  test-js-tool:
+    url: https://github.com/nexuslbs/omni-plugins.git
+    path: tools/test-js-tool
+  test-python:
+    url: https://github.com/nexuslbs/omni-plugins.git
+    path: tools/test-python
+  test-rust-tool:
+    url: https://github.com/nexuslbs/omni-plugins.git
+    path: tools/test-rust-tool
+  test-rust-tool-2:
+    url: https://github.com/nexuslbs/omni-plugins.git
+    path: tools/test-rust-tool-2
+platforms:
+  test-js:
+    url: https://github.com/nexuslbs/omni-plugins.git
+    path: platforms/test-js
+  test-python:
+    url: https://github.com/nexuslbs/omni-plugins.git
+    path: platforms/test-python
+  test-rust:
+    url: https://github.com/nexuslbs/omni-plugins.git
+    path: platforms/test-rust
+providers:
+  noop:
+    url: https://github.com/nexuslbs/omni-plugins.git
+    path: providers/noop
+  noop-full:
+    url: https://github.com/nexuslbs/omni-plugins.git
+    path: providers/noop-full

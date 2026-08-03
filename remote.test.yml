@@ -1,0 +1,16 @@
+# Remote plugins pointing at the omni-agent repository (plugins/tools/*).
+# These plugins also exist as built-ins; registering them here as remote
+# exercises importing the same plugin name from a different source repo.
+tools:
+  kanban:
+    url: https://github.com/nexuslbs/omniagent.git
+    path: plugins/tools/kanban
+  cron:
+    url: https://github.com/nexuslbs/omniagent.git
+    path: plugins/tools/cron
+  subtasks:
+    url: https://github.com/nexuslbs/omniagent.git
+    path: plugins/tools/subtasks
+  actions:
+    url: https://github.com/nexuslbs/omniagent.git
+    path: plugins/tools/actions
