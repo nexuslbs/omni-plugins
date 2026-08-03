@@ -279,8 +279,7 @@ def get_thread_messages(cursor, thread_id, limit=10):
                   TO_CHAR(created_at, 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS created_at
            FROM messages
            WHERE thread_id = %s
-             AND role IN ('cause', 'agent')
-             AND msg_type IN ('message', 'reasoning')
+             AND (role = 'cause' OR msg_type IN ('message', 'reasoning'))
            ORDER BY created_at DESC
            LIMIT %s""",
         (thread_id, limit),
