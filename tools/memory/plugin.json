@@ -1,0 +1,58 @@
+{
+  "name": "memory",
+  "version": "0.1.0",
+  "type": "mcp",
+  "description": "Python MCP memory server : promote facts to long-term memory, list/review memories, manage profile memory files, and generate channel summaries. Python equivalent of the Rust memory plugin.",
+  "config_schema": [
+    {
+      "key": "database_url",
+      "label": "Database URL",
+      "type": "string",
+      "default": "$env:DATABASE_URL",
+      "description": "PostgreSQL connection URL for memory storage"
+    },
+    {
+      "key": "omni_dir",
+      "label": "OMNI_DIR",
+      "type": "string",
+      "default": "$env:OMNI_DIR",
+      "description": "Data directory for wiki memory files"
+    },
+    {
+      "key": "summarize_after_days",
+      "label": "Summarize After Days",
+      "type": "integer",
+      "default": 7,
+      "description": "Trigger summary after this many days of completed threads (trigger count = days * 2)"
+    },
+    {
+      "key": "summary_window",
+      "label": "Summary Window",
+      "type": "integer",
+      "default": 10,
+      "description": "Number of threads to include in each summary window"
+    },
+    {
+      "key": "channel_summary_tokens",
+      "label": "Channel Summary Tokens",
+      "type": "integer",
+      "default": 4096,
+      "description": "Max tokens for channel summary generation"
+    },
+    {
+      "key": "summary_provider",
+      "label": "Summary Provider",
+      "type": "provider",
+      "default": "",
+      "description": "LLM provider for channel summarization"
+    },
+    {
+      "key": "summary_model",
+      "label": "Summary Model",
+      "type": "model",
+      "depends_on": "summary_provider",
+      "default": "",
+      "description": "LLM model for channel summarization"
+    }
+  ]
+}

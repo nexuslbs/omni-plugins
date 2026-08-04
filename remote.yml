@@ -7,6 +7,9 @@ tools:
   cron-echo:
     url: https://github.com/nexuslbs/omni-plugins.git
     path: tools/cron-echo
+  memory:
+    url: https://github.com/nexuslbs/omni-plugins.git
+    path: tools/memory
   prompt:
     url: https://github.com/nexuslbs/omni-plugins.git
     path: tools/prompt
