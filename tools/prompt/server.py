@@ -2,11 +2,12 @@
 """prompt-python MCP server : Python equivalent of the Rust prompt plugin.
 
 Tools:
-  - generate: Build the complete LLM prompt (system prompt + thread context +
-              summaries + skills + subtasks + planning). Same output as the
-              Rust mcp-server-prompt except "You are OmniAgent (Python)" vs
-              "You are OmniAgent" in the static identity line.
-  - compact-messages: Compact old assistant/tool-call pairs in a message array.
+  - prompt_generate: Build the complete LLM prompt (system prompt + thread
+              context + summaries + skills + subtasks + planning). Same output
+              as the Rust mcp-server-prompt.
+  - prompt_compact-messages: Compact old assistant/tool-call pairs in a
+              message array, embedding a truncated excerpt of each drained
+              tool result so the agent keeps what it learned.
 
 MCP JSON-RPC over stdio. Requires DATABASE_URL and OMNI_DIR env vars.
 """
@@ -30,6 +31,11 @@ log = logging.getLogger("mcp")
 MCP_PROTOCOL_VERSION = "2025-03-26"
 initialized = False
 conn = None
+
+# Compact excerpt limits (mirror Rust compact.rs: first ~800 chars per tool
+# result, joined and capped at ~4000 total).
+TOOL_EXCERPT_CHARS = 800
+TOTAL_EXCERPT_CAP = 4000
 
 # ---------------------------------------------------------------------------
 # MCP protocol helpers
@@ -104,9 +110,13 @@ TOOL_GUIDANCE = (
     "2. SEARCH BEFORE QUERY : Use search (search_messages, search_wiki) before "
     "query_database for text/vector searches. Only use query_database for structured "
     "aggregations (counts, sums, averages, groupings).\n"
-    "3. WRITE SINGLE-FIELD FILES : When using filesystem_write_tool, write complete "
-    "single-field content files. Do NOT write partial files and append later. Do NOT "
-    "write placeholder content expecting to \"fill in\" values afterward.\n"
+    "3. WRITE COMPLETE FILES : When writing a file, write complete content. Do NOT "
+    "write placeholder content expecting to fill in values afterward. "
+    "EXCEPTION — LARGE OUTPUTS: if the file content is too large to fit in a single "
+    "response (approaching your output token limit), split it across multiple "
+    "filesystem_write calls: first with append=false, then append=true for each "
+    "subsequent chunk. Never abandon a large write — chunk it. Never let an output "
+    "length limit cause task failure.\n"
     "4. RENAME INSTEAD OF RECREATE : When a file/directory already exists and you "
     "need to change its name, rename it (filesystem_move). Do NOT delete and recreate.\n"
     "5. NO POLLING : Do NOT repeatedly check the same condition. If you're waiting "
@@ -143,7 +153,7 @@ PLATFORM_HINTS = {
 }
 
 def build_dynamic_identity(tool_names):
-    """Build identity string : same as Rust but with '(Python)' marker."""
+    """Build identity string : same as Rust."""
     tool_set = set(tool_names)
 
     has_fetch = "fetch" in tool_set
@@ -182,8 +192,8 @@ def build_dynamic_identity(tool_names):
 
     tool_list = ", ".join(parts) if parts else ", ".join(tool_names)
 
-    # KEY DIFFERENCE from Rust: "(Python)" marker in identity line
-    return f"You are OmniAgent (Python) : precise, efficient, autonomous. Your tools: {tool_list}. Use minimum roundtrips. If a tool fails, move on : don't retry more than twice."
+    # Identity line identical to Rust: "You are OmniAgent".
+    return f"You are OmniAgent : precise, efficient, autonomous. Your tools: {tool_list}. Use minimum roundtrips. If a tool fails, move on : don't retry more than twice."
 
 def build_system_prompt(data_dir, profile_name, platform, system_message, tool_names):
     """Build the three-tier system prompt : matches Rust build_system_prompt()."""
@@ -329,7 +339,7 @@ def get_subtasks(cursor, thread_id):
 def handle_generate(req_id, arguments, meta):
     """Generate the full LLM prompt as parts : matches Rust handle_generate_full()."""
     try:
-        profile_name = (arguments or {}).get("profile_name", "default")
+        profile_name = (arguments or {}).get("profile_name", "omni")
         platform = (arguments or {}).get("platform", "")
         system_message = (arguments or {}).get("system_message")
         user_message = (arguments or {}).get("user_message", "")
@@ -420,12 +430,31 @@ def handle_generate(req_id, arguments, meta):
         context = "\n\n---\n\n".join(context_blocks)
         user = user_message
 
+        # Plan resolution (mirrors Rust): true=plan, false=no plan,
+        # null/absent = let plugin-level config decide.
+        plan_input = (arguments or {}).get("plan")
+        if plan_input is not None:
+            plan = bool(plan_input)
+        else:
+            max_chars = int(os.environ.get("PLANNING_COMPLEXITY_MAX_CHARS", "60"))
+            keywords_str = os.environ.get(
+                "PLANNING_COMPLEXITY_KEYWORDS",
+                "implement,refactor,redesign,architecture,create,build,design,develop,"
+                "migrate,restructure,overhaul,rewrite,configure,set up,deploy,integrate,"
+                "add feature,fix bug,resolve issue,multi-step,complex",
+            )
+            keywords = [k.strip() for k in keywords_str.split(",") if k.strip()]
+            lower_user = user.lower()
+            has_keyword = any(k in lower_user for k in keywords) if keywords else False
+            plan = len(user) > max_chars or has_keyword
+
         result = json.dumps({
             "system": system,
             "memory": memory,
             "soul": soul,
             "context": context,
             "user": user,
+            "plan": plan,
         }, indent=2)
 
         send_json(make_success(req_id, make_tool_result(result)))
@@ -436,7 +465,8 @@ def handle_generate(req_id, arguments, meta):
 
 
 def handle_compact_messages(req_id, arguments):
-    """Compact old assistant messages : matches Rust handle_compact_messages()."""
+    """Compact old assistant messages : matches Rust handle_compact_messages()
+    incl. the Result-excerpt digest of drained tool results (compact.rs)."""
     try:
         messages = (arguments or {}).get("messages", [])
         keep_recent = int((arguments or {}).get("keep_recent", 3))
@@ -462,10 +492,42 @@ def handle_compact_messages(req_id, arguments):
                 while tool_end < len(messages) and messages[tool_end].get("role") == "tool":
                     tool_end += 1
 
-                tool_names_list = [messages[i].get("name", "") for i in range(idx + 1, tool_end) if messages[i].get("name")]
+                tool_msgs = messages[idx + 1:tool_end]
+
+                tool_names_list = [m.get("name", "") for m in tool_msgs if m.get("name")]
                 tool_info = f". Results from: {', '.join(tool_names_list)}" if tool_names_list else ""
 
-                condensed = f"[compact: {', '.join(summary)}{tool_info}]" if summary else "[compact]"
+                # Content-bearing digest of the drained tool results: the first
+                # ~800 chars of each tool message, joined and capped at ~4000
+                # total, so the agent retains what it learned (e.g. file
+                # contents) even after the tool messages drain. Mirrors Rust
+                # compact.rs.
+                excerpt_parts = []
+                excerpt_chars = 0
+                for m in tool_msgs:
+                    if excerpt_chars >= TOTAL_EXCERPT_CAP:
+                        break
+                    content = m.get("content") or ""
+                    if not content:
+                        continue
+                    head = content[:TOOL_EXCERPT_CHARS]
+                    more = len(content) - len(head)
+                    name = m.get("name") or ""
+                    piece = f"--- {name}:\n{head}" if name else head
+                    if more > 0:
+                        piece += f"[... +{more} more chars]"
+                    excerpt_chars += len(piece)
+                    excerpt_parts.append(piece)
+                excerpt_text = "\n".join(excerpt_parts).rstrip() if excerpt_parts else ""
+
+                if excerpt_text:
+                    if summary:
+                        condensed = f"[compact: {', '.join(summary)}{tool_info}. Result excerpt: {excerpt_text}]"
+                    else:
+                        condensed = f"[compact]. Result excerpt: {excerpt_text}"
+                else:
+                    condensed = f"[compact: {', '.join(summary)}{tool_info}]" if summary else "[compact]"
+
                 messages[idx]["content"] = condensed
                 messages[idx]["tool_calls"] = None
                 del messages[idx + 1:tool_end]
@@ -506,14 +568,14 @@ def handle_initialize(req_id):
 def handle_tools_list(req_id):
     tools = [
         {
-            "name": "prompt-build",
-            "description": "[prompt-python] Generate the complete LLM prompt as 5 parts (system, memory, soul, context, user) for a conversation.",
+            "name": "prompt_generate",
+            "description": "Generate the complete LLM prompt for a conversation, including system prompt (identity, tool guidance, memory, user profile), thread context (recent messages, summaries, skills, subtasks), and optional planning instructions. Returns the full prompt as a JSON string. This is the single source of truth for prompt building: no other prompt assembly is needed.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "profile_name": {
                         "type": "string",
-                        "description": "Profile name (default: default)"
+                        "description": "Profile name (default: omni)"
                     },
                     "platform": {
                         "type": "string",
@@ -539,16 +601,18 @@ def handle_tools_list(req_id):
                     "channel_id": {
                         "type": "integer",
                         "description": "Channel ID for context assembly (summaries)"
+                    },
+                    "plan": {
+                        "type": "boolean",
+                        "description": "Plan mode suggestion: true=plan, false=no plan, null=let plugin decide based on config"
                     }
                 },
                 "required": []
             }
         },
         {
-            "name": "prompt-compact",
-            "description": "[prompt-python] Compact old assistant messages in a conversation to save tokens. "
-                           "Removes redundant assistant tool-call pairs from the middle of the conversation "
-                           "while preserving system messages and the most recent messages.",
+            "name": "prompt_compact-messages",
+            "description": "Compact old assistant messages in a conversation to save tokens. Removes redundant assistant tool-call pairs from the middle of the conversation while preserving system messages, the most recent messages, and tool results. Returns the compacted message array.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -621,9 +685,9 @@ def main():
                 tool_name = params.get("name", "")
                 arguments = params.get("arguments", {}) if isinstance(params, dict) else {}
 
-                if tool_name == "prompt-build":
+                if tool_name == "prompt_generate":
                     handle_generate(req_id, arguments, meta)
-                elif tool_name == "prompt-compact":
+                elif tool_name == "prompt_compact-messages":
                     handle_compact_messages(req_id, arguments)
                 else:
                     if req_id is not None:
