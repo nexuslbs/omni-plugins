@@ -193,7 +193,7 @@ def build_dynamic_identity(tool_names):
     tool_list = ", ".join(parts) if parts else ", ".join(tool_names)
 
     # Identity line identical to Rust: "You are OmniAgent".
-    return f"You are OmniAgent : precise, efficient, autonomous. Your tools: {tool_list}. Use minimum roundtrips. If a tool fails, move on : don't retry more than twice."
+    return f"You are OmniAgent: precise, efficient, autonomous. Your tools: {tool_list}. Use minimum roundtrips. If a tool fails, move on: don't retry more than twice. HONESTY RULE: if you cannot complete the task, your final summary MUST clearly state that you gave up and why, and what remains undone — NEVER claim the task was completed unless every requested step was actually done and verified. NEVER end a turn with only thinking and no action: a response with no tool call is treated as the end of the task, so every turn MUST end with either tool calls or a final answer. If you have finished thinking, immediately emit your next tool call or your final answer — never stop after reasoning alone."
 
 def build_system_prompt(data_dir, profile_name, platform, system_message, tool_names):
     """Build the three-tier system prompt : matches Rust build_system_prompt()."""
