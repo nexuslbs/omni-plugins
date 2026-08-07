@@ -175,6 +175,16 @@ EXECUTION_DISCIPLINE = (
     "wait, never poll with other tools.\n"
     "- If you cannot finish in this thread: commit what exists, push it, and report exactly what "
     "remains. NEVER let the thread die with uncommitted work on disk.\n"
+    "- CONTINUATION CHECK FIRST (before reading any source file): this task may have been "
+    "attempted by previous threads that died at the budget. Run `git status` + `git diff --stat` "
+    "in the target repo FIRST. Uncommitted changes on disk = a previous thread's implementation "
+    "that survived — review it, fix it if broken, and COMMIT + PUSH it (the #1 missing step is "
+    "dying right before committing). Do NOT re-implement what is already on disk.\n"
+    "- SQLX CACHE TRAP: this workspace builds with SQLX_OFFLINE=true and requires a cached entry "
+    "for every query. If you add or change any SQL, `cargo build` will fail with 'no cached data "
+    "for this query'. Regenerate the cache (prepare.py / cargo sqlx prepare against a throwaway "
+    "DB) AND commit the regenerated .sqlx/*.json files TOGETHER with the query changes. Never "
+    "leave a broken .sqlx state for the next thread.\n"
 )
 
 def build_dynamic_identity(tool_names):
@@ -325,6 +335,53 @@ def get_thread_messages(cursor, thread_id, limit=10):
     rows = cursor.fetchall()
     rows.reverse()  # oldest first
     return rows
+
+def load_kanban_task_template(cursor, data_dir, profile_name, thread_id):
+    """Load the task template for a kanban-linked thread.
+
+    The Rust context_builder reads cause_msg.metadata['template'], but the
+    kanban dispatcher never propagates the task's template field there (it
+    destructures `_task_template` and drops it). This loader queries the
+    thread -> kanban task -> template field directly, so the template is
+    injected into the prompt even with the current deployed dispatcher.
+
+    Returns the template content (str) or None.
+    """
+    if not thread_id:
+        return None
+    try:
+        cursor.execute(
+            "SELECT task_id FROM threads WHERE id = %s",
+            (int(thread_id),),
+        )
+        row = cursor.fetchone()
+        if not row or not row[0]:
+            return None
+        task_id = row[0]
+        cursor.execute(
+            "SELECT template FROM kanban_tasks WHERE id = %s",
+            (task_id,),
+        )
+        trow = cursor.fetchone()
+        if not trow or not trow[0]:
+            return None
+        template_name = trow[0].strip()
+        if not template_name:
+            return None
+        base = Path(data_dir) / "profiles" / profile_name / "templates"
+        path = base / (template_name if template_name.endswith(".md") else template_name + ".md")
+        if not path.exists():
+            log.warning("task template '%s' not found at %s", template_name, path)
+            return None
+        content = path.read_text(encoding="utf-8").strip()
+        if not content:
+            return None
+        log.info("Loaded task template '%s' for thread %s (%d chars)",
+                 template_name, thread_id, len(content))
+        return content
+    except Exception as e:
+        log.warning("load_kanban_task_template failed: %s", e)
+        return None
 
 def get_latest_summary(cursor, channel_id):
     cursor.execute(
@@ -552,6 +609,21 @@ def handle_generate(req_id, arguments, meta):
                     context_blocks.append(cross)
             except Exception as e:
                 log.warning("cross-task block failed: %s", e)
+
+        # Task template (kanban tasks): the dispatcher drops the task's
+        # template field from the cause metadata, so load it directly from
+        # the kanban_tasks row and inject it as a system-level context block.
+        if thread_id is not None:
+            try:
+                tmpl = load_kanban_task_template(cursor, data_dir, profile_name, thread_id)
+                if tmpl:
+                    context_blocks.append(
+                        "=== Task Template (MANDATORY — read first) ===\n"
+                        "The following template provides structured guidance for this task type. "
+                        "Its budget / discipline / project rules override generic habits:\n\n" + tmpl
+                    )
+            except Exception as e:
+                log.warning("task template load failed: %s", e)
 
         cursor.close()
 
