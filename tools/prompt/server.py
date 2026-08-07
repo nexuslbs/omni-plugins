@@ -152,6 +152,31 @@ PLATFORM_HINTS = {
     ),
 }
 
+# Generic execution discipline injected into EVERY prompt (task or plain).
+# Deliberately task-agnostic: applies to kanban tasks, cron jobs, and ad-hoc
+# threads alike. Written as positive rules (what to do), not as a critique of
+# any specific failure.
+EXECUTION_DISCIPLINE = (
+    "## Execution discipline (MANDATORY)\n"
+    "- Your thread has a HARD tool-call budget (~120 calls). Exploration is the #1 budget killer: "
+    "threads that burn 100+ calls reading files die mid-task with zero commits. Budget it like "
+    "money: at most 10 exploration calls, start WRITING by call ~20, commit partial work as you go.\n"
+    "- READ FILES ONCE. When a file's relevant content is already quoted in your task body / "
+    "instructions (file paths, line numbers, code snippets, commands), those facts are "
+    "PRE-VERIFIED ground truth — use them, do NOT re-open the file to \"confirm\" them. "
+    "Re-reading the same file (or the same line range) through the same or a different tool "
+    "wastes budget and teaches you nothing.\n"
+    "- EDIT FIRST. When the instructions give you the change and the location, open the target "
+    "file ONCE, apply the edit, then read back ONLY the edited region (a few lines) to confirm. "
+    "Do not page through the whole file first.\n"
+    "- Your plan is: edit → test → commit. A plan that lists \"read files to confirm line content\" "
+    "is a plan to waste the budget.\n"
+    "- If a build/test is slow, use the wait tool with a generous timeout (300s) — ONE call per "
+    "wait, never poll with other tools.\n"
+    "- If you cannot finish in this thread: commit what exists, push it, and report exactly what "
+    "remains. NEVER let the thread die with uncommitted work on disk.\n"
+)
+
 def build_dynamic_identity(tool_names):
     """Build identity string : same as Rust."""
     tool_set = set(tool_names)
@@ -203,6 +228,9 @@ def build_system_prompt(data_dir, profile_name, platform, system_message, tool_n
     parts.append(build_dynamic_identity(tool_names))
     parts.append(TOOL_GUIDANCE)
     parts.append(f"Active Hermes profile: {profile_name}.")
+
+    # Tier 1b : Generic execution discipline (always present)
+    parts.append(EXECUTION_DISCIPLINE)
 
     # Tier 2 : Context / optional system message
     if system_message:
@@ -332,6 +360,95 @@ def get_subtasks(cursor, thread_id):
     )
     return cursor.fetchall()
 
+# Cross-task channel context (mirrors Rust prompt plugin build_cross_task_block,
+# Phase 3b-ext): a thread on a task should see what sibling tasks on the same
+# channel already established, instead of re-exploring.
+CROSS_TASK_MAX_ENTRIES = 5
+CROSS_TASK_MAX_TITLE_CHARS = 60
+CROSS_TASK_MAX_MESSAGE_CHARS = 300
+
+def build_cross_task_block(cursor, thread_id):
+    """Return a context block with recent terminal threads of OTHER tasks on
+    the same channel, or None for plain (non-task) threads / no matches."""
+    cursor.execute(
+        "SELECT task_id, schedule_task_id, channel_id FROM threads WHERE id = %s",
+        (thread_id,),
+    )
+    ref = cursor.fetchone()
+    if not ref:
+        return None
+    task_id, schedule_task_id, channel_id = ref
+    if not task_id and not schedule_task_id:
+        return None  # plain thread - cross-task context does not apply
+    if not channel_id:
+        return None
+
+    cursor.execute(
+        """
+        SELECT t.id,
+               t.task_id,
+               k.title        AS task_title,
+               t.workflow_step,
+               t.status,
+               m.content      AS last_content,
+               m.msg_type     AS last_msg_type
+        FROM threads t
+        LEFT JOIN kanban_tasks k ON k.id = t.task_id
+        LEFT JOIN LATERAL (
+            SELECT content, msg_type
+            FROM messages
+            WHERE thread_id = t.id
+            ORDER BY thread_sequence DESC NULLS LAST,
+                     iteration_number DESC NULLS LAST,
+                     id DESC
+            LIMIT 1
+        ) m ON true
+        WHERE t.channel_id = %s
+          AND t.id != %s
+          AND t.task_id IS NOT NULL
+          AND (%s::text IS NULL OR t.task_id != %s)
+          AND (%s::text IS NULL OR t.task_id != %s)
+          AND t.status IN ('completed', 'review', 'failed', 'interrupted', 'skipped')
+        ORDER BY t.id DESC
+        LIMIT %s
+        """,
+        (channel_id, thread_id,
+         task_id, task_id,
+         schedule_task_id, schedule_task_id,
+         CROSS_TASK_MAX_ENTRIES),
+    )
+    rows = cursor.fetchall()
+
+    entries = []
+    for r in rows:
+        t_id, t_task_id, t_title, t_step, t_status, t_content, t_msg_type = r
+        if t_task_id and t_task_id == task_id:
+            continue
+        if t_task_id and schedule_task_id and t_task_id == schedule_task_id:
+            continue
+        if t_title:
+            task_label = f'task {t_task_id} "{truncate_str(t_title, CROSS_TASK_MAX_TITLE_CHARS)}"'
+        elif t_task_id:
+            task_label = f"task {t_task_id}"
+        else:
+            task_label = "plain thread"
+        step = t_step or "-"
+        msg_type = t_msg_type or "text"
+        content = t_content or "<no messages>"
+        entries.append(
+            f"- thread {t_id} | {task_label} | step {step} | status {t_status} | "
+            f"last message ({msg_type}): {truncate_str(content, CROSS_TASK_MAX_MESSAGE_CHARS)}"
+        )
+
+    if not entries:
+        return None
+    header = (
+        "Recent threads from other tasks on this channel (background context from sibling tasks, "
+        "not your own history): a prior phase on this channel often already solved the exact "
+        "problem you are investigating - trust its final result instead of re-deriving it."
+    )
+    return header + "\n" + "\n".join(entries)
+
 # ---------------------------------------------------------------------------
 # Tool handlers
 # ---------------------------------------------------------------------------
@@ -356,6 +473,7 @@ def handle_generate(req_id, arguments, meta):
         parts.append(build_dynamic_identity(tool_names))
         parts.append(TOOL_GUIDANCE)
         parts.append(f"Active Hermes profile: {profile_name}.")
+        parts.append(EXECUTION_DISCIPLINE)
         if system_message:
             parts.append(system_message)
         hint = PLATFORM_HINTS.get(platform)
@@ -424,6 +542,16 @@ def handle_generate(req_id, arguments, meta):
                     icon = {"completed": "✅", "cancelled": "❌", "error": "⚠️"}.get(s[2], "⬜")
                     lines.append(f"{i + 1}. {icon} {s[1]}")
                 context_blocks.append("\n".join(lines))
+
+        # Cross-task channel context (other tasks' terminal threads on this
+        # channel) — trust prior phases instead of re-exploring.
+        if thread_id is not None:
+            try:
+                cross = build_cross_task_block(cursor, thread_id)
+                if cross:
+                    context_blocks.append(cross)
+            except Exception as e:
+                log.warning("cross-task block failed: %s", e)
 
         cursor.close()
 
