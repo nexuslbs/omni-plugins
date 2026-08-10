@@ -36,6 +36,28 @@ conn = None
 # result, joined and capped at ~4000 total).
 TOOL_EXCERPT_CHARS = 800
 TOTAL_EXCERPT_CAP = 4000
+# Read-type tools whose results ARE the agent's working memory (file
+# contents, listings, search hits). When compaction must drain them, keep a
+# much larger excerpt than the generic cap — zeroing them forces the agent to
+# re-read the same files (thread 700 death spiral: 117 sed windows of the
+# same ranges, zero commits). Mirrors Rust compact.rs is_read_type_tool().
+READ_TOOL_PREFIXES = (
+    "filesystem_read",
+    "filesystem_list",
+    "filesystem_search",
+    "filesystem_info",
+    "query_database",
+    "search_messages",
+    "search_wiki",
+    "skills_view",
+    "git_status",
+    "git_run-command",
+)
+READ_EXCERPT_CHARS = 2000
+
+
+def _is_read_type_tool(name):
+    return any(name.startswith(p) for p in READ_TOOL_PREFIXES)
 
 # ---------------------------------------------------------------------------
 # MCP protocol helpers
@@ -171,7 +193,7 @@ EXECUTION_DISCIPLINE = (
     "`grep -n` to read file contents: docker_compose is for RUNNING commands/builds, not "
     "reading files. Re-reading overlapping line ranges of the same file is the #1 budget "
     "killer (threads have died at 120/120 after 100+ sed windows with zero commits). Write "
-    "facts into your working notes (`prompt_note-write`) after the FIRST read; consult "
+    "facts into your working notes (`notes_note-write`) after the FIRST read; consult "
     "notes, never the disk again.\n"
     "- EDIT FIRST. When the instructions give you the change and the location, open the target "
     "file ONCE, apply the edit, then read back ONLY the edited region (a few lines) to confirm. "
@@ -735,9 +757,12 @@ def handle_compact_messages(req_id, arguments):
                     content = m.get("content") or ""
                     if not content:
                         continue
-                    head = content[:TOOL_EXCERPT_CHARS]
-                    more = len(content) - len(head)
                     name = m.get("name") or ""
+                    # Read-type results keep a much larger excerpt so the
+                    # agent retains what it read (mirrors Rust compact.rs).
+                    excerpt_limit = READ_EXCERPT_CHARS if _is_read_type_tool(name) else TOOL_EXCERPT_CHARS
+                    head = content[:excerpt_limit]
+                    more = len(content) - len(head)
                     piece = f"--- {name}:\n{head}" if name else head
                     if more > 0:
                         piece += f"[... +{more} more chars]"
