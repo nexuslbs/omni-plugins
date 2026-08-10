@@ -166,6 +166,13 @@ EXECUTION_DISCIPLINE = (
     "PRE-VERIFIED ground truth — use them, do NOT re-open the file to \"confirm\" them. "
     "Re-reading the same file (or the same line range) through the same or a different tool "
     "wastes budget and teaches you nothing.\n"
+    "- READ WITH filesystem_read ONLY. `filesystem_read` (offset/limit paging) is the ONLY "
+    "file-reading tool — ONE call per page. NEVER use `docker_compose exec ... sed -n` / "
+    "`grep -n` to read file contents: docker_compose is for RUNNING commands/builds, not "
+    "reading files. Re-reading overlapping line ranges of the same file is the #1 budget "
+    "killer (threads have died at 120/120 after 100+ sed windows with zero commits). Write "
+    "facts into your working notes (`prompt_note-write`) after the FIRST read; consult "
+    "notes, never the disk again.\n"
     "- EDIT FIRST. When the instructions give you the change and the location, open the target "
     "file ONCE, apply the edit, then read back ONLY the edited region (a few lines) to confirm. "
     "Do not page through the whole file first.\n"
@@ -424,6 +431,18 @@ CROSS_TASK_MAX_ENTRIES = 5
 CROSS_TASK_MAX_TITLE_CHARS = 60
 CROSS_TASK_MAX_MESSAGE_CHARS = 300
 
+def _threads_has_column(cursor, column):
+    """Check if the `threads` table has a column (schema-tolerant: the live
+    omnistable DB is image-fixed and may lack columns that only arrive with
+    the next release — e.g. workflow_step)."""
+    cursor.execute(
+        "SELECT 1 FROM information_schema.columns "
+        "WHERE table_name = 'threads' AND column_name = %s",
+        (column,),
+    )
+    return cursor.fetchone() is not None
+
+
 def build_cross_task_block(cursor, thread_id):
     """Return a context block with recent terminal threads of OTHER tasks on
     the same channel, or None for plain (non-task) threads / no matches."""
@@ -440,12 +459,18 @@ def build_cross_task_block(cursor, thread_id):
     if not channel_id:
         return None
 
+    # Schema-tolerant: workflow_step only exists on DBs migrated to the
+    # current schema (dev/temp DBs). The live omnistable DB is image-fixed
+    # and does NOT have it — the query must not reference it there.
+    has_step = _threads_has_column(cursor, "workflow_step")
+    step_col = "t.workflow_step" if has_step else "NULL::text AS workflow_step"
+
     cursor.execute(
-        """
+        f"""
         SELECT t.id,
                t.task_id,
                k.title        AS task_title,
-               t.workflow_step,
+               {step_col},
                t.status,
                m.content      AS last_content,
                m.msg_type     AS last_msg_type
