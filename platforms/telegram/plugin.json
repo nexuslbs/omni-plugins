@@ -1,0 +1,53 @@
+{
+  "name": "telegram",
+  "version": "1.0.0",
+  "type": "platform",
+  "description": "Telegram Bot API platform: send, edit and delete messages via Telegram, with inbound long-polling for incoming messages",
+  "entrypoint": {
+    "command": "python3",
+    "args": [
+      "platform.py"
+    ],
+    "transport": "stdio"
+  },
+  "capabilities": {
+    "inbound": true,
+    "outbound": true
+  },
+  "config_schema": [
+    {
+      "key": "bot_token",
+      "label": "Bot Token",
+      "type": "secret",
+      "required": true,
+      "secret": true,
+      "description": "Telegram Bot API token from @BotFather. Never reuse another bot's token — create a fresh bot for omniagent."
+    },
+    {
+      "key": "api_base_url",
+      "label": "API Base URL",
+      "type": "string",
+      "required": false,
+      "default": "https://api.telegram.org",
+      "description": "Base URL of the Telegram Bot API. Override to point at a mock server for tests."
+    },
+    {
+      "key": "polling_enabled",
+      "label": "Enable inbound polling",
+      "type": "boolean",
+      "required": false,
+      "default": true,
+      "description": "Poll Telegram (getUpdates long-polling) for incoming messages"
+    },
+    {
+      "key": "poll_interval_secs",
+      "label": "Poll interval (seconds)",
+      "type": "integer",
+      "required": false,
+      "default": 5,
+      "min": 1,
+      "max": 300,
+      "description": "How often to poll for new messages (getUpdates long-poll timeout)"
+    }
+  ]
+}
