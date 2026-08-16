@@ -1,0 +1,14 @@
+{
+  "servers": [
+    {
+      "name": "paperclip",
+      "transport": "stdio",
+      "command": "node",
+      "args": ["node_modules/@paperclipai/mcp-server/dist/stdio.js"],
+      "env": {},
+      "timeout_secs": 900,
+      "max_retries": 1,
+      "allowed_tools": ["*"]
+    }
+  ]
+}

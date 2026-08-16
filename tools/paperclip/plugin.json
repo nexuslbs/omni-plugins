@@ -1,0 +1,43 @@
+{
+  "name": "paperclip",
+  "version": "2026.722.0",
+  "type": "mcp",
+  "description": "Official @paperclipai/mcp-server integration for Paperclip (issue/agent management). Thin MCP wrapper over the paperclip REST API: 30+ typed tools (paperclipMe, paperclipListIssues, paperclipCreateIssue, ...) plus the paperclipApiRequest escape hatch for endpoints without a dedicated tool yet.",
+  "config_schema": [
+    {
+      "key": "PAPERCLIP_API_URL",
+      "label": "Paperclip API URL",
+      "type": "string",
+      "default": "http://paperclip:3100",
+      "description": "Base URL of the paperclip REST API (service name inside the omni-stack compose network)"
+    },
+    {
+      "key": "PAPERCLIP_API_KEY",
+      "label": "Paperclip API Key",
+      "type": "string",
+      "default": "",
+      "description": "Bearer token for the paperclip /api endpoints. Create in the paperclip UI (Settings -> API keys / agent API keys) and provide via plugin config ($secret: ref)."
+    },
+    {
+      "key": "PAPERCLIP_COMPANY_ID",
+      "label": "Company ID",
+      "type": "string",
+      "default": "",
+      "description": "Optional company id for multi-company paperclip instances"
+    },
+    {
+      "key": "PAPERCLIP_AGENT_ID",
+      "label": "Agent ID",
+      "type": "string",
+      "default": "",
+      "description": "Optional agent id (used by agent-scoped paperclip features)"
+    },
+    {
+      "key": "PAPERCLIP_RUN_ID",
+      "label": "Run ID",
+      "type": "string",
+      "default": "",
+      "description": "Optional run id (used by agent-scoped paperclip features)"
+    }
+  ]
+}

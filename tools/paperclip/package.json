@@ -1,0 +1,10 @@
+{
+  "name": "paperclip-mcp-plugin",
+  "version": "2026.722.0",
+  "private": true,
+  "description": "Thin wrapper plugin around the official @paperclipai/mcp-server (pinned to the paperclip v2026.722.0 release).",
+  "type": "module",
+  "dependencies": {
+    "@paperclipai/mcp-server": "2026.722.0"
+  }
+}
