@@ -1,0 +1,8 @@
+# actions plugin: no external pip dependencies.
+#
+# The DB driver (psycopg2) and YAML parser (PyYAML) are provided by the
+# omniagent runtime image as Debian system packages (python3-psycopg2 /
+# python3-yaml), so the plugin runs on the system python3 with no venv.
+# This file exists to satisfy the installer's dependency-manifest check
+# for remote python plugins (installer requires requirements.txt or
+# pyproject.toml); installing it is a no-op.
