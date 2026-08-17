@@ -1,0 +1,15 @@
+{
+  "servers": [
+    {
+      "name": "actions",
+      "transport": "stdio",
+      "command": "python3",
+      "args": ["server.py"],
+      "env": {"OMNI_DIR": "$env:OMNI_DIR", "DATABASE_URL": "$env:DATABASE_URL"},
+      "timeout_secs": 900,
+      "max_retries": 1,
+      "pool_size": 3,
+      "allowed_tools": ["*"]
+    }
+  ]
+}

@@ -1,0 +1,22 @@
+{
+  "name": "actions",
+  "version": "0.1.0",
+  "type": "mcp",
+  "description": "Python MCP actions server : hindsight_populator, relevance_indexer, setup_knowledge_pipeline. Python equivalent of the removed Rust built-in actions plugin.",
+  "config_schema": [
+    {
+      "key": "database_url",
+      "label": "Database URL",
+      "type": "string",
+      "default": "$env:DATABASE_URL",
+      "description": "PostgreSQL connection URL for hindsight message queries"
+    },
+    {
+      "key": "omni_dir",
+      "label": "OMNI_DIR",
+      "type": "string",
+      "default": "$env:OMNI_DIR",
+      "description": "Data directory for hindsight watermark, wiki index and tasks.yml"
+    }
+  ]
+}
