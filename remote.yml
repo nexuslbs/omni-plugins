@@ -1,15 +1,24 @@
 # Remote plugin registry for the omni-plugins repository.
 # Lists every plugin shipped in this repo, grouped by plugin type.
 tools:
+  actions:
+    url: https://github.com/nexuslbs/omni-plugins.git
+    path: tools/actions
   cosmos-rust-tool:
     url: https://github.com/nexuslbs/omni-plugins.git
     path: tools/cosmos-rust-tool
   cron-echo:
     url: https://github.com/nexuslbs/omni-plugins.git
     path: tools/cron-echo
+  hindsight:
+    url: https://github.com/nexuslbs/omni-plugins.git
+    path: tools/hindsight
   memory:
     url: https://github.com/nexuslbs/omni-plugins.git
     path: tools/memory
+  paperclip:
+    url: https://github.com/nexuslbs/omni-plugins.git
+    path: tools/paperclip
   prompt:
     url: https://github.com/nexuslbs/omni-plugins.git
     path: tools/prompt
@@ -26,6 +35,9 @@ tools:
     url: https://github.com/nexuslbs/omni-plugins.git
     path: tools/test-rust-tool-2
 platforms:
+  telegram:
+    url: https://github.com/nexuslbs/omni-plugins.git
+    path: platforms/telegram
   test-js:
     url: https://github.com/nexuslbs/omni-plugins.git
     path: platforms/test-js

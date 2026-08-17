@@ -1,0 +1,43 @@
+{
+  "name": "hindsight",
+  "version": "0.1.0",
+  "type": "mcp",
+  "description": "Python MCP hindsight server : hindsight_recall, hindsight_retain, hindsight_reflect. Python equivalent of the removed Rust hindsight plugin.",
+  "config_schema": [
+    {
+      "key": "hindsight_url",
+      "label": "Hindsight URL",
+      "type": "string",
+      "default": "http://hindsight:8888",
+      "description": "Base URL of the hindsight service"
+    },
+    {
+      "key": "hindsight_bank",
+      "label": "Hindsight Bank",
+      "type": "string",
+      "default": "omniagent",
+      "description": "Bank id used by the hindsight service"
+    },
+    {
+      "key": "hindsight_limit",
+      "label": "Recall limit",
+      "type": "integer",
+      "default": 5,
+      "description": "Default max results for hindsight_recall"
+    },
+    {
+      "key": "hindsight_budget",
+      "label": "Recall budget",
+      "type": "string",
+      "default": "low",
+      "description": "Default recall budget (low/mid/high)"
+    },
+    {
+      "key": "hindsight_timeout",
+      "label": "HTTP timeout (seconds)",
+      "type": "integer",
+      "default": 15,
+      "description": "Timeout for hindsight HTTP calls"
+    }
+  ]
+}

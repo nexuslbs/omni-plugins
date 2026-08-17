@@ -1,0 +1,15 @@
+{
+  "servers": [
+    {
+      "name": "hindsight",
+      "transport": "stdio",
+      "command": "python3",
+      "args": ["server.py"],
+      "env": {"HINDSIGHT_URL": "$env:HINDSIGHT_URL", "HINDSIGHT_BANK": "$env:HINDSIGHT_BANK"},
+      "timeout_secs": 30,
+      "max_retries": 1,
+      "pool_size": 1,
+      "allowed_tools": ["*"]
+    }
+  ]
+}
