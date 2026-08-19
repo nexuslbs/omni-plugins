@@ -65,8 +65,24 @@ def make_tool_result(text, is_error=False):
     return {"content": [{"type": "text", "text": str(text)}], "isError": bool(is_error)}
 
 
+def cfg_env(*keys):
+    """Read a plugin config value from env (framework may inject config as env)."""
+    for k in keys:
+        v = os.environ.get(k)
+        if v and v.strip():
+            return v.strip()
+    return ""
+
+
 def get_omni_dir():
-    return os.environ.get("OMNI_DIR", "/opt/omni")
+    return cfg_env("omni_dir") or os.environ.get("OMNI_DIR") or _fail_omni_dir()
+
+
+def _fail_omni_dir():
+    raise RuntimeError(
+        "OMNI_DIR is not set: set the OMNI_DIR environment variable or configure the "
+        "'omni_dir' plugin config field (default '$env:OMNI_DIR')"
+    )
 
 
 def rfc3339_now():

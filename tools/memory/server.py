@@ -87,7 +87,14 @@ def sanitize_filename(name):
 
 
 def get_omni_dir():
-    return os.environ.get("OMNI_DIR", "/opt/omni")
+    return cfg_env("omni_dir") or os.environ.get("OMNI_DIR") or _fail_omni_dir()
+
+
+def _fail_omni_dir():
+    raise RuntimeError(
+        "OMNI_DIR is not set: set the OMNI_DIR environment variable or configure the "
+        "'omni_dir' plugin config field (default '$env:OMNI_DIR')"
+    )
 
 
 def get_profile(meta):

@@ -2,5 +2,14 @@
   "name": "prompt",
   "version": "0.1.0",
   "type": "mcp",
-  "description": "Python MCP prompt server : generates full LLM prompts including system prompt, thread context, summaries, skills, and message compaction. Python equivalent of the Rust prompt plugin."
+  "description": "Python MCP prompt server : generates full LLM prompts including system prompt, thread context, summaries, skills, and message compaction. Python equivalent of the Rust prompt plugin.",
+  "config_schema": [
+    {
+      "key": "omni_dir",
+      "label": "OMNI_DIR",
+      "type": "string",
+      "default": "$env:OMNI_DIR",
+      "description": "Data directory for profiles, memories, skills and templates"
+    }
+  ]
 }

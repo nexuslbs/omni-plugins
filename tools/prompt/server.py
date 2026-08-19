@@ -91,6 +91,20 @@ def read_file(path):
     except FileNotFoundError:
         return ""
 
+def cfg_env(*keys):
+    """Read a plugin config value from env (framework may inject config as env)."""
+    for k in keys:
+        v = os.environ.get(k)
+        if v and v.strip():
+            return v.strip()
+    return ""
+
+def _fail_omni_dir():
+    raise RuntimeError(
+        "OMNI_DIR is not set: set the OMNI_DIR environment variable or configure the "
+        "'omni_dir' plugin config field (default '$env:OMNI_DIR')"
+    )
+
 def load_memories(data_dir, profile_name):
     """Read MEMORY.md and USER.md for a profile."""
     base = Path(data_dir) / "profiles" / profile_name / "memories"
@@ -568,7 +582,7 @@ def handle_generate(req_id, arguments, meta):
         thread_id = (arguments or {}).get("thread_id") or (meta or {}).get("thread_id")
         channel_id = (arguments or {}).get("channel_id") or (meta or {}).get("channel_id")
 
-        data_dir = os.environ.get("OMNI_DIR", os.path.expanduser("~/.omniagent"))
+        data_dir = cfg_env("omni_dir") or os.environ.get("OMNI_DIR") or _fail_omni_dir()
 
         # 1. Build system prompt parts
         memory_raw, user_raw = load_memories(data_dir, profile_name)
