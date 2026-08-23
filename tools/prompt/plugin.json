@@ -2,14 +2,111 @@
   "name": "prompt",
   "version": "0.1.0",
   "type": "mcp",
-  "description": "Python MCP prompt server : generates full LLM prompts including system prompt, thread context, summaries, skills, and message compaction. Python equivalent of the Rust prompt plugin.",
+  "description": "Python MCP prompt server : generates full LLM prompts including system prompt, thread context, summaries, skills, and message compaction. Exact-parity Python equivalent of the builtin Rust prompt plugin.",
   "config_schema": [
     {
-      "key": "omni_dir",
-      "label": "OMNI_DIR",
+      "key": "planning_complexity_max_chars",
+      "label": "Complexity Max Chars",
+      "type": "integer",
+      "default": 60,
+      "description": "Max character count for simple prompts (greetings, short commands): these get no plan"
+    },
+    {
+      "key": "planning_complexity_keywords",
+      "label": "Complexity Keywords",
       "type": "string",
+      "default": "implement,refactor,redesign,architecture,create,build,design,develop,migrate,restructure,overhaul,rewrite,configure,set up,deploy,integrate,add feature,fix bug,resolve issue,multi-step,complex",
+      "description": "Comma-separated keywords that trigger planning"
+    },
+    {
+      "key": "prompt_plan_max_tokens",
+      "label": "Plan Max Tokens",
+      "type": "integer",
+      "default": 2048,
+      "description": "Maximum tokens for the planning LLM call"
+    },
+    {
+      "key": "memory_max_chars",
+      "label": "Memory Max Chars",
+      "type": "integer",
+      "default": 5000,
+      "description": "Maximum characters for the memory section in the system prompt"
+    },
+    {
+      "key": "tokenizer_encoding",
+      "label": "Tokenizer Encoding",
+      "type": "string",
+      "default": "",
+      "description": "Tokenizer encoding for budget calculations (e.g. 'cl100k_base'). Empty or invalid = tokens \u2248 chars/4 fallback"
+    },
+    {
+      "key": "condense_keep_turns",
+      "label": "Condense Keep Turns",
+      "type": "integer",
+      "default": 4,
+      "description": "Number of most recent assistant turns to preserve when condensing"
+    },
+    {
+      "key": "database_url",
+      "default": "$env:DATABASE_URL",
+      "label": "Database Url",
+      "type": "string"
+    },
+    {
+      "key": "omni_dir",
       "default": "$env:OMNI_DIR",
-      "description": "Data directory for profiles, memories, skills and templates"
+      "label": "Omni Dir",
+      "type": "string"
+    },
+    {
+      "key": "tool_excerpt_chars",
+      "label": "Tool Excerpt Chars",
+      "type": "integer",
+      "default": 800,
+      "description": "Maximum characters retained per older tool result during compaction"
+    },
+    {
+      "key": "total_excerpt_cap",
+      "label": "Total Excerpt Cap",
+      "type": "integer",
+      "default": 4000,
+      "description": "Maximum total excerpt characters retained during compaction"
+    },
+    {
+      "key": "read_excerpt_chars",
+      "label": "Read Excerpt Chars",
+      "type": "integer",
+      "default": 2000,
+      "description": "Maximum characters retained for older read-only results during compaction"
+    },
+    {
+      "key": "compact_keep_recent",
+      "label": "Compact Keep Recent",
+      "type": "integer",
+      "default": 3,
+      "description": "Number of recent assistant tool-call turns preserved during compaction"
+    },
+    {
+      "key": "compact_max_passes",
+      "label": "Compact Max Passes",
+      "type": "integer",
+      "default": 3,
+      "description": "Maximum progressive compaction passes per invocation"
+    },
+    {
+      "key": "compact_keep_step",
+      "label": "Compact Keep Step",
+      "type": "integer",
+      "default": 1,
+      "description": "Amount to reduce preserved recent turns between compaction passes"
+    },
+    {
+      "key": "max_summary_chars",
+      "label": "Max Summary Chars",
+      "type": "integer",
+      "default": 50000,
+      "description": "Hard cap (chars) on the frozen compaction summary block. Without it the block grows on every compaction (strict superset, never drained), so once preamble + block + tail exceed the hard token budget compaction fires on EVERY iteration and each firing grows the block further — an unbounded death spiral (observed: thread 1726, 162 compactions in 300 iterations, block 66K→357K chars). Oldest entries are pruned (newest kept) when the cap is exceeded; drained content remains recoverable from context-*.json dumps and auto-notes.md."
     }
-  ]
+  ],
+  "label": "prompt"
 }
