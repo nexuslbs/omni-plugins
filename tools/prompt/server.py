@@ -153,6 +153,13 @@ def cfg_env(key):
     return "" if v is None else str(v)
 
 
+def _fail_omni_dir():
+    raise RuntimeError(
+        "OMNI_DIR is not set: set the OMNI_DIR environment variable or configure the "
+        "'omni_dir' plugin config field (default '$env:OMNI_DIR')"
+    )
+
+
 # ---------------------------------------------------------------------------
 # MCP protocol helpers
 # ---------------------------------------------------------------------------
@@ -1088,7 +1095,7 @@ def handle_generate(req_id, arguments, meta):
             channel_id = meta.get("channel_name") or meta.get("channel_id")
 
         cfg = get_config()
-        data_dir = cfg.get("omni_dir") or ""
+        data_dir = cfg_env("omni_dir") or os.environ.get("OMNI_DIR") or _fail_omni_dir()
 
         # 1. System prompt parts (identity + guidance + profile + optional
         # system message + platform hint) and memory section (MEMORY.md).
@@ -1096,7 +1103,7 @@ def handle_generate(req_id, arguments, meta):
         parts = []
         parts.append(build_dynamic_identity(tool_names))
         parts.append(TOOL_GUIDANCE)
-        parts.append(f"Active profile: {profile_name}.")
+        parts.append(f"Active Hermes profile: {profile_name}.")
         if system_message:
             parts.append(system_message)
         hint = PLATFORM_HINTS.get(platform)
