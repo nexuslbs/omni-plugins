@@ -48,6 +48,7 @@ class TelegramPlatform:
         self.api_base_url = DEFAULT_API_BASE
         self.polling_enabled = False
         self.poll_interval_secs = 5
+        self.parent_by_chat = False
         self._offset = None
         self._poll_thread = None
         self._stop = threading.Event()
@@ -133,10 +134,13 @@ class TelegramPlatform:
             self.poll_interval_secs = max(1, min(300, interval))
         except (TypeError, ValueError):
             self.poll_interval_secs = 5
+        self.parent_by_chat = bool(config.get("parent_by_chat", False))
         self._configured = True
-        log.info("Configured: api_base=%s polling=%s interval=%ss token_set=%s",
+        log.info("Configured: api_base=%s polling=%s interval=%ss "
+                 "parent_by_chat=%s token_set=%s",
                  self.api_base_url, self.polling_enabled,
-                 self.poll_interval_secs, bool(self.bot_token))
+                 self.poll_interval_secs, self.parent_by_chat,
+                 bool(self.bot_token))
 
         if self.polling_enabled and self.bot_token:
             self._start_polling()
@@ -274,6 +278,24 @@ class TelegramPlatform:
             return
         text = msg.get("text") or msg.get("caption") or ""
         external_id = str(msg.get("message_id", ""))
+        metadata = {
+            "chat_id": chat_id,
+            "chat_type": chat.get("type", ""),
+            "from_id": (msg.get("from") or {}).get("id"),
+            "date": msg.get("date"),
+            "message_id": msg.get("message_id"),
+        }
+        if self.parent_by_chat:
+            # Deliver the chat id as the parent external id (the SAME value for
+            # every message from this chat), so threads created from messages in
+            # this chat always share one parent. omniagent reads
+            # metadata["root_id"] as the parent external id for inbound messages
+            # (the same envelope key the mattermost platform uses for its thread
+            # root) — the existing pending/merge machinery then merges a pending
+            # same-parent message into a processing thread per its percent /
+            # char-amount thresholds. When parent_by_chat is false (default) no
+            # parent id is set: identical to current behavior.
+            metadata["root_id"] = str(chat_id)
         self._write_json({
             "method": "inbound_message",
             "params": {
@@ -281,13 +303,7 @@ class TelegramPlatform:
                 "text": text,
                 "external_id": external_id,
                 "files": [],
-                "metadata": {
-                    "chat_id": chat_id,
-                    "chat_type": chat.get("type", ""),
-                    "from_id": (msg.get("from") or {}).get("id"),
-                    "date": msg.get("date"),
-                    "message_id": msg.get("message_id"),
-                },
+                "metadata": metadata,
             },
         })
         log.info("Inbound message %s from chat %s: %s",

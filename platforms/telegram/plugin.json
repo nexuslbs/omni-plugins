@@ -48,6 +48,14 @@
       "min": 1,
       "max": 300,
       "description": "How often to poll for new messages (getUpdates long-poll timeout)"
+    },
+    {
+      "key": "parent_by_chat",
+      "label": "Parent new messages by chat",
+      "type": "boolean",
+      "required": false,
+      "default": false,
+      "description": "When true, every inbound user message carries the chat id as the parent external id (the same value for all messages from that chat), so threads created from the same chat always share one parent and pending messages from that chat can merge into a processing thread (existing omniagent pending/merge machinery). Default false: no parent id — current behavior."
     }
   ]
 }

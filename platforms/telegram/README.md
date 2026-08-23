@@ -16,7 +16,7 @@ A Python implementation of the omniagent **telegram platform plugin**
 
 * `initialize` → name `telegram`, capabilities `{inbound: true, outbound: true}`
 * `configure` → stores `bot_token`, `api_base_url`, `polling_enabled`,
-  `poll_interval_secs`
+  `poll_interval_secs`, `parent_by_chat`
 * `deliver` → `POST sendMessage` (chat_id = resource_identifier, text = content)
 * `edit_message` → `POST editMessageText`
 * `delete_message` → `POST deleteMessage`
@@ -35,6 +35,7 @@ A Python implementation of the omniagent **telegram platform plugin**
 | `api_base_url` | string | `https://api.telegram.org` | Override to point at the mock for tests |
 | `polling_enabled` | boolean | `true` | Enable inbound getUpdates long-polling |
 | `poll_interval_secs` | integer | `5` | getUpdates long-poll timeout + loop cadence |
+| `parent_by_chat` | boolean | `false` | When `true`, every inbound user message carries the chat id as the **parent external id** (delivered via `metadata["root_id"]`, the envelope key omniagent reads as `parent_external_id`), so threads created from the same chat always share one parent and pending messages from that chat merge into a processing thread via omniagent's existing pending/sub-prompt machinery. Default `false`: no parent id — current behavior (each message creates its own thread). |
 
 ## Testing without a real token (default)
 
@@ -79,6 +80,7 @@ omniagent; do not reference or test against it).
          api_base_url: "https://api.telegram.org"
          polling_enabled: true
          poll_interval_secs: 5
+         parent_by_chat: false
    ```
 4. Register the channel: send a message to the bot from the target Telegram
    chat, or start a chat with the bot and run `$new` — the agent creates a

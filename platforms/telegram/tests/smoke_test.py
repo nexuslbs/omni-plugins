@@ -13,6 +13,10 @@ Covers:
   * react             -> setMessageReaction payload hits the mock
   * inbound           -> injected getUpdates flow back as inbound_message
                          notifications on stdout
+  * parent_by_chat    -> config false (default): no parent external id;
+                         config true: inbound messages carry the chat id as
+                         metadata["root_id"] (the envelope key omniagent
+                         reads as the parent external id)
 
 Usage:
     python3 tests/smoke_test.py [--port 8091]
@@ -226,6 +230,7 @@ def main():
               "mock stored setMessageReaction")
 
         # 7. inbound: inject a getUpdates payload -> inbound_message
+        #    (parent_by_chat defaults to false -> NO parent external id)
         http_post(base + "/admin/inject", {
             "update_id": 9001,
             "message": {
@@ -242,10 +247,76 @@ def main():
               and p.get("text") == "inbound hello from telegram"
               and p.get("external_id") == "777",
               "inbound_message notification carries chat/text/external_id")
+        check("parent_external_id" not in p
+              and "root_id" not in p.get("metadata", {}),
+              "default config (parent_by_chat=false): no parent external id")
 
-        # 8. inbound edited message -> message_edited
+        # 7b. parent_by_chat=true: inbound messages carry the chat id as the
+        #     parent external id — delivered via metadata["root_id"], the
+        #     envelope key omniagent reads as parent_external_id (same value
+        #     for every message from the same chat).
+        r = plat.call("configure", {"config": {
+            "bot_token": MOCK_TOKEN,
+            "api_base_url": base,
+            "polling_enabled": True,
+            "poll_interval_secs": 1,
+            "parent_by_chat": True,
+        }})
+        check(r.get("result", {}).get("configured") is True,
+              "configure(parent_by_chat=true) -> configured:true")
         http_post(base + "/admin/inject", {
-            "update_id": 9002,
+            "update_id": 9003,
+            "message": {
+                "message_id": 778,
+                "date": 1700000001,
+                "chat": {"id": -1002003004, "type": "channel"},
+                "from": {"id": 555, "first_name": "Mock"},
+                "text": "second inbound hello",
+            },
+        })
+        n = plat.expect_notification("inbound_message", timeout=25)
+        p = n.get("params", {})
+        check(p.get("resource_identifier") == "-1002003004"
+              and p.get("external_id") == "778",
+              "parent_by_chat=true: inbound message carries chat/text/external_id")
+        check(p.get("metadata", {}).get("root_id") == "-1002003004",
+              "parent_by_chat=true: parent external id = chat id "
+              "(same value for all messages from the chat)")
+
+        # 7c. toggle back to false: parent external id disappears again
+        r = plat.call("configure", {"config": {
+            "bot_token": MOCK_TOKEN,
+            "api_base_url": base,
+            "polling_enabled": True,
+            "poll_interval_secs": 1,
+            "parent_by_chat": False,
+        }})
+        check(r.get("result", {}).get("configured") is True,
+              "configure(parent_by_chat=false) -> configured:true")
+        http_post(base + "/admin/inject", {
+            "update_id": 9004,
+            "message": {
+                "message_id": 779,
+                "date": 1700000002,
+                "chat": {"id": -1002003004, "type": "channel"},
+                "from": {"id": 555, "first_name": "Mock"},
+                "text": "third inbound hello",
+            },
+        })
+        n = plat.expect_notification("inbound_message", timeout=25)
+        p = n.get("params", {})
+        check(p.get("external_id") == "779",
+              "parent_by_chat=false: inbound message still delivered")
+        check("parent_external_id" not in p
+              and "root_id" not in p.get("metadata", {}),
+              "parent_by_chat=false: no parent external id on inbound message")
+
+        # 8. inbound edited message -> message_edited.
+        #    update_id must be >= the platform's current offset (the mock's
+        #    offset-based queue skips older update_ids; 9003/9004 were already
+        #    consumed above, so use 9005).
+        http_post(base + "/admin/inject", {
+            "update_id": 9005,
             "edited_message": {
                 "message_id": 777,
                 "date": 1700000000,
