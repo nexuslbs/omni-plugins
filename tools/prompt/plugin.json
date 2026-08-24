@@ -55,7 +55,7 @@
     {
       "key": "omni_dir",
       "default": "$env:OMNI_DIR",
-      "label": "Omni Dir",
+      "label": "OMNI_DIR",
       "type": "string"
     },
     {
