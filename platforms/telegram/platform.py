@@ -16,10 +16,10 @@ getUpdates (offset-based) and emits `inbound_message` notifications to
 stdout, exactly like the mattermost platform does.
 
 Mock support: the `api_base_url` config override lets the whole plugin run
-against a mock Telegram Bot API server (see tests/mock_telegram_api.py) —
+against a mock Telegram Bot API server (see tests/mock_telegram_api.py) -
 no real bot token is ever needed for tests.
 
-Uses only the Python standard library (urllib) — no external dependencies.
+Uses only the Python standard library (urllib) - no external dependencies.
 """
 
 import json
@@ -291,7 +291,7 @@ class TelegramPlatform:
             # this chat always share one parent. omniagent reads
             # metadata["root_id"] as the parent external id for inbound messages
             # (the same envelope key the mattermost platform uses for its thread
-            # root) — the existing pending/merge machinery then merges a pending
+            # root) - the existing pending/merge machinery then merges a pending
             # same-parent message into a processing thread per its percent /
             # char-amount thresholds. When parent_by_chat is false (default) no
             # parent id is set: identical to current behavior.

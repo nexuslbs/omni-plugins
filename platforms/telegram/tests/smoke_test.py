@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Smoke test for the omniagent telegram platform plugin — runs entirely
+Smoke test for the omniagent telegram platform plugin - runs entirely
 against the MOCK Telegram Bot API (tests/mock_telegram_api.py). No real
 bot token is used anywhere.
 
@@ -252,7 +252,7 @@ def main():
               "default config (parent_by_chat=false): no parent external id")
 
         # 7b. parent_by_chat=true: inbound messages carry the chat id as the
-        #     parent external id — delivered via metadata["root_id"], the
+        #     parent external id - delivered via metadata["root_id"], the
         #     envelope key omniagent reads as parent_external_id (same value
         #     for every message from the same chat).
         r = plat.call("configure", {"config": {
@@ -350,7 +350,7 @@ def main():
     if failures:
         print("SMOKE TEST FAILED: {} assertion(s) failed".format(failures))
         return 1
-    print("SMOKE TEST PASSED — telegram platform works against the mock "
+    print("SMOKE TEST PASSED - telegram platform works against the mock "
           "(no real token used)")
     return 0
 

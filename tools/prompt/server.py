@@ -49,7 +49,7 @@ initialized = False
 conn = None
 
 # ---------------------------------------------------------------------------
-# Plugin config — mirrors the builtin Rust PluginConfig (plugin.json
+# Plugin config - mirrors the builtin Rust PluginConfig (plugin.json
 # config_schema, 15 keys). Values arrive as env vars injected by the
 # framework (key name or UPPER_SNAKE variant); defaults match the Rust
 # PluginConfig::default() exactly.
@@ -317,12 +317,12 @@ def build_dynamic_identity(tool_names):
         f"Your tools: {tool_list}. Use minimum roundtrips. If a tool fails, move on: "
         "don't retry more than twice. HONESTY RULE: if you cannot complete the task, "
         "your final summary MUST clearly state that you gave up and why, and what "
-        "remains undone — NEVER claim the task was completed unless every requested "
+        "remains undone - NEVER claim the task was completed unless every requested "
         "step was actually done and verified. NEVER end a turn with only thinking and "
         "no action: a response with no tool call is treated as the end of the task, "
         "so every turn MUST end with either tool calls or a final answer. If you have "
         "finished thinking, immediately emit your next tool call or your final answer "
-        "— never stop after reasoning alone."
+        "- never stop after reasoning alone."
     )
 
 
@@ -337,10 +337,10 @@ TOOL_GUIDANCE = (
     "(counts, sums, averages, groupings).\n"
     "3. WRITE COMPLETE FILES: When writing a file, write the entire content in a single "
     "operation. Do NOT write placeholder content expecting to fill in values afterward. "
-    "EXCEPTION — LARGE OUTPUTS: if the file content is too large to fit in a single "
+    "EXCEPTION - LARGE OUTPUTS: if the file content is too large to fit in a single "
     "response (approaching your output token limit), split it across multiple "
     "filesystem_write calls: first with append=false, then append=true for each "
-    "subsequent chunk. Never abandon a large write — chunk it. Never let an output "
+    "subsequent chunk. Never abandon a large write - chunk it. Never let an output "
     "length limit cause task failure.\n"
     "4. RENAME INSTEAD OF RECREATE: When a file or directory already exists and you "
     "need to change its name, use the rename tool. Do NOT delete and recreate.\n"
@@ -358,15 +358,15 @@ TOOL_GUIDANCE = (
     "10. TAKE NOTES: maintain a durable working memory with the note_* tools "
     "(notes_note-write/notes_note-append/notes_note-read/notes_note-list/notes_note-rm) after every non-trivial "
     "discovery (paths, line numbers, commands, root causes, decisions). Notes "
-    "survive compaction and thread death — the retry thread starts with them.\n"
-    "11. VERIFY-ONCE: read a file ONCE with `filesystem_read` (offset/limit paging — ONE\n"
+    "survive compaction and thread death - the retry thread starts with them.\n"
+    "11. VERIFY-ONCE: read a file ONCE with `filesystem_read` (offset/limit paging - ONE\n"
     "call per page) and write the facts you need into your working notes; never re-read the\n"
     "same file or line range. NEVER use `docker_compose exec ... sed -n` / `grep -n` to read\n"
     "file contents: docker_compose is for RUNNING commands/builds, not reading files.\n"
     "Re-reading overlapping line ranges of the same file is the #1 budget killer (threads have\n"
     "died at 120/120 after 100+ sed windows with zero commits). Consult your notes, not the\n"
     "disk, when you need content again.\n"
-    "12. NEVER RE-READ CONTEXT DUMPS: a context-*.json dump is read ONCE per thread — a second read returns a '[duplicate read ...]' marker, not content. Trust the injected '=== Context Compacted ===' summary and your notes instead; re-reading dumps is a forbidden anti-loop that wastes iterations.\n"
+    "12. NEVER RE-READ CONTEXT DUMPS: a context-*.json dump is read ONCE per thread - a second read returns a '[duplicate read ...]' marker, not content. Trust the injected '=== Context Compacted ===' summary and your notes instead; re-reading dumps is a forbidden anti-loop that wastes iterations.\n"
     "13. SUBTASKS: after planning a multi-step task, create one subtask per plan step with the subtasks tool (subtasks_manage-subtasks, action=\"add\"); as you finish each step mark its subtask completed (action=\"update\", subtask_id=N, status=\"completed\"); cancel any subtask that is no longer needed (status=\"cancelled\"); before your final answer, complete or cancel ALL subtasks so none remain pending."
 )
 
@@ -589,7 +589,7 @@ def render_prior_attempts_block(rows, summaries):
     rows = sorted(rows, key=lambda r: r[0], reverse=True)[:PRIOR_ATTEMPTS_MAX_ENTRIES]
     if not rows:
         return None
-    lines = ["=== Previous attempts of this task (READ — do NOT repeat what they did) ==="]
+    lines = ["=== Previous attempts of this task (READ - do NOT repeat what they did) ==="]
     for r in rows:
         t_id, status, iterations, ended_at = r
         iter_s = str(iterations) if iterations is not None else "?"
@@ -1507,7 +1507,7 @@ def prune_summary_block(content, max_chars):
     kept.reverse()
     if not kept:
         kept = [entry_list[-1]] if entry_list else []
-    return header + "\n".join(kept) + "\n[older entries pruned — see context-*.json dumps]"
+    return header + "\n".join(kept) + "\n[older entries pruned - see context-*.json dumps]"
 
 
 def compact_old_assistant_messages(messages, keep_recent, thread_dir, current_iteration, settings):

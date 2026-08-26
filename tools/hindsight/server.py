@@ -31,7 +31,7 @@ log = logging.getLogger("hindsight-mcp")
 MCP_PROTOCOL_VERSION = "2025-03-26"
 
 # --------------------------------------------------------------------------
-# Config — defaulted from env, overridable via the `configure` message.
+# Config - defaulted from env, overridable via the `configure` message.
 # --------------------------------------------------------------------------
 
 DEFAULTS = {

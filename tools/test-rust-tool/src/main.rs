@@ -386,7 +386,7 @@ async fn handle_tools_call<W: AsyncWriteExt + Unpin>(
 }
 
 /// Spawned variant of the wait handler that creates its own stdout writer.
-/// Called from tokio::spawn in the main dispatch — does NOT block the stdin loop.
+/// Called from tokio::spawn in the main dispatch - does NOT block the stdin loop.
 async fn send_wait_response(
     writer: &mut tokio::io::BufWriter<tokio::io::Stdout>,
     req_id: u64,

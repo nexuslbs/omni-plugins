@@ -1,4 +1,4 @@
-# Provider definitions for code-less providers — NO custom plugin code needed.
+# Provider definitions for code-less providers - NO custom plugin code needed.
 #
 # These providers are served entirely by omniagent's BUILT-IN provider
 # implementation (chat_completions / anthropic support), so they do not ship
@@ -9,16 +9,16 @@
 # this file's `providers` section, diff against local config/models.yml,
 # merge), or copy the entries into your stack's config/models.yml.
 #
-# Schema — same as omni-stack config/models.yml (task "Provider/model
+# Schema - same as omni-stack config/models.yml (task "Provider/model
 # overrides via config/models.yml", task_18cd408ead8bcbbd):
-#   plugin: false                       # no plugin — builtin provider support
-#   api_mode: "chat_completions" | "anthropic"   # "dynamic" is LEGACY — do not use
+#   plugin: false                       # no plugin - builtin provider support
+#   api_mode: "chat_completions" | "anthropic"   # "dynamic" is LEGACY - do not use
 #   api_key: "$secret:NAME" / "$env:VAR"        # NEVER a literal value
 #   models / model_config / default_base_url / default_model / refresh_url /
 #   supports_reasoning per the models.yml spec.
 
 providers:
-  # DeepSeek API provider — OpenAI-compatible chat completions.
+  # DeepSeek API provider - OpenAI-compatible chat completions.
   deepseek:
     plugin: false
     api_mode: "chat_completions"
@@ -29,7 +29,7 @@ providers:
     api_key: "$secret:DEEPSEEK_API_KEY"
     models: ["deepseek-v4-flash", "deepseek-v3", "deepseek-r1", "deepseek-v4-pro"]
 
-  # OpenAI API provider — OpenAI-compatible chat completions.
+  # OpenAI API provider - OpenAI-compatible chat completions.
   openai:
     plugin: false
     api_mode: "chat_completions"
@@ -39,7 +39,7 @@ providers:
     api_key: "$secret:OPENAI_API_KEY"
     models: ["gpt-4o", "gpt-4o-mini", "gpt-4-turbo", "gpt-4.1"]
 
-  # OpenCode Go — gateway provider with multi-model support. Serves an
+  # OpenCode Go - gateway provider with multi-model support. Serves an
   # OpenAI-compatible /v1/chat/completions surface for GLM/Kimi/DeepSeek and an
   # Anthropic-compatible /v1/messages surface for MiniMax/Qwen; the model list
   # is refreshable via refresh_url. api_mode is "chat_completions" (the legacy
@@ -56,7 +56,7 @@ providers:
     api_key: "$secret:OPENCODE_API_KEY"
     models: ["deepseek-v4-flash"]
 
-  # Test provider — built-in fake responses without HTTP calls or API keys.
+  # Test provider - built-in fake responses without HTTP calls or API keys.
   # default_base_url points at the noop-provider container server
   # (omni-stack services/noop), which is separate from any plugin file.
   noop:

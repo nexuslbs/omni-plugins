@@ -247,7 +247,7 @@ def tasks_schedules(text):
 def insert_schedule_block(text, block):
     """Insert `block` (an indented schedule entry) under the `schedules:` key.
 
-    Preserves the rest of the file (comments, other sections) — a plain-text
+    Preserves the rest of the file (comments, other sections) - a plain-text
     insert instead of a yaml round-trip, so the git-tracked tasks.yml keeps
     its formatting.
     """

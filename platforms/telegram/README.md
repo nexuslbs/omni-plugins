@@ -1,4 +1,4 @@
-# Telegram Platform Plugin — mock-based testing, no real token
+# Telegram Platform Plugin - mock-based testing, no real token
 
 A Python implementation of the omniagent **telegram platform plugin**
 (JSON-lines protocol over stdio) that talks to the Telegram Bot API.
@@ -8,7 +8,7 @@ A Python implementation of the omniagent **telegram platform plugin**
 | Path | Purpose |
 |---|---|
 | `plugin.json` | Platform manifest: capabilities inbound+outbound, config schema |
-| `platform.py` | The plugin — stdlib-only (urllib), no external deps |
+| `platform.py` | The plugin - stdlib-only (urllib), no external deps |
 | `tests/mock_telegram_api.py` | Mock Telegram Bot API server (in-memory state) |
 | `tests/smoke_test.py` | End-to-end smoke test against the mock (no real token) |
 
@@ -24,18 +24,18 @@ A Python implementation of the omniagent **telegram platform plugin**
 * inbound → background long-poll of `getUpdates` (offset-based); each inbound
   message is emitted to stdout as an `inbound_message` notification
   (`resource_identifier` = chat id, `text`, `external_id` = message_id,
-  `metadata`), edits as `message_edited` — same contract as the built-in
+  `metadata`), edits as `message_edited` - same contract as the built-in
   mattermost platform.
 
 ## Config
 
 | Key | Type | Default | Notes |
 |---|---|---|---|
-| `bot_token` | secret, required | — | Telegram Bot API token from @BotFather |
+| `bot_token` | secret, required | - | Telegram Bot API token from @BotFather |
 | `api_base_url` | string | `https://api.telegram.org` | Override to point at the mock for tests |
 | `polling_enabled` | boolean | `true` | Enable inbound getUpdates long-polling |
 | `poll_interval_secs` | integer | `5` | getUpdates long-poll timeout + loop cadence |
-| `parent_by_chat` | boolean | `false` | When `true`, every inbound user message carries the chat id as the **parent external id** (delivered via `metadata["root_id"]`, the envelope key omniagent reads as `parent_external_id`), so threads created from the same chat always share one parent and pending messages from that chat merge into a processing thread via omniagent's existing pending/sub-prompt machinery. Default `false`: no parent id — current behavior (each message creates its own thread). |
+| `parent_by_chat` | boolean | `false` | When `true`, every inbound user message carries the chat id as the **parent external id** (delivered via `metadata["root_id"]`, the envelope key omniagent reads as `parent_external_id`), so threads created from the same chat always share one parent and pending messages from that chat merge into a processing thread via omniagent's existing pending/sub-prompt machinery. Default `false`: no parent id - current behavior (each message creates its own thread). |
 
 ## Testing without a real token (default)
 
@@ -48,7 +48,7 @@ python3 tests/smoke_test.py
 ```
 
 Configure the platform with `"api_base_url": "http://127.0.0.1:8091"` and any
-non-empty `bot_token` (the mock accepts any token). All testing is local —
+non-empty `bot_token` (the mock accepts any token). All testing is local -
 nothing ever touches the real Telegram API and no real credentials are used.
 
 The mock implements `getUpdates` (long-poll + offset confirmation),
@@ -57,9 +57,9 @@ The mock implements `getUpdates` (long-poll + offset confirmation),
 `GET /admin/sent`, `GET /admin/reactions`, `GET /admin/updates`,
 `POST /admin/reset`.
 
-## Real full test (operator — requires a NEW bot, never Hermes')
+## Real full test (operator - requires a NEW bot, never Hermes')
 
-A real end-to-end test needs a **fresh bot token created for omniagent** —
+A real end-to-end test needs a **fresh bot token created for omniagent** -
 **never reuse the Hermes telegram bot token** (it belongs to Hermes, not
 omniagent; do not reference or test against it).
 
@@ -83,7 +83,7 @@ omniagent; do not reference or test against it).
          parent_by_chat: false
    ```
 4. Register the channel: send a message to the bot from the target Telegram
-   chat, or start a chat with the bot and run `$new` — the agent creates a
+   chat, or start a chat with the bot and run `$new` - the agent creates a
    channel bound to that Telegram chat id.
 5. Verify outbound (agent replies arrive in Telegram) and inbound (Telegram
    messages reach the agent and are answered).

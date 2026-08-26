@@ -19,7 +19,7 @@ Admin endpoints (for tests, no token required):
   GET  /admin/updates                  list updates still in the queue
   POST /admin/reset                    clear all in-memory state
 
-Every /bot<token>/... call accepts ANY non-empty token — the point is to
+Every /bot<token>/... call accepts ANY non-empty token - the point is to
 verify the platform's protocol/payloads, not real credentials. No request
 ever leaves localhost.
 
@@ -132,7 +132,7 @@ class MockHandler(BaseHTTPRequestHandler):
 
     def _read_body(self):
         """Read the request body. Telegram clients send JSON; urllib-based
-        clients (the python platform) send application/x-www-form-urlencoded —
+        clients (the python platform) send application/x-www-form-urlencoded -
         parse both. Values become plain strings (like the real Bot API)."""
         length = int(self.headers.get("Content-Length", 0) or 0)
         if length <= 0:

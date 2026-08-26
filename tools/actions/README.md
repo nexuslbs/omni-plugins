@@ -16,11 +16,11 @@ omni-stack `config/actions.yml` without any changes.
 
 ## Structure
 
-- `plugin.json` — plugin metadata + config schema (`database_url`,
+- `plugin.json` - plugin metadata + config schema (`database_url`,
   `omni_dir`, `$env:` defaults resolved at install).
-- `mcp-config.json` — stdio server config (command `python3 server.py`,
+- `mcp-config.json` - stdio server config (command `python3 server.py`,
   env `OMNI_DIR`/`DATABASE_URL`).
-- `server.py` — MCP JSON-RPC over stdio, mirroring `tools/memory/server.py`.
+- `server.py` - MCP JSON-RPC over stdio, mirroring `tools/memory/server.py`.
 
 ## Behavior parity with the Rust plugin
 
