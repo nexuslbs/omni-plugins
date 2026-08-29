@@ -11,6 +11,7 @@ Covers:
   * edit_message      -> editMessageText payload hits the mock
   * delete_message    -> deleteMessage payload hits the mock
   * react             -> setMessageReaction payload hits the mock
+  * typing            -> sendChatAction(action=typing) hits the mock
   * inbound           -> injected getUpdates flow back as inbound_message
                          notifications on stdout
   * parent_by_chat    -> config false (default): no parent external id;
@@ -245,6 +246,15 @@ def main():
             and json.loads(reactions[-1]["reaction"])[0]["emoji"] == "\U0001f91d",
             "mock stored mapped unicode handshake for shortcode",
         )
+
+        # 6c. typing -> sendChatAction (action=typing)
+        r = plat.call("typing", {"resource_identifier": "123456789"})
+        check(r.get("result", {}).get("typing") is True,
+              "typing -> typing:true")
+        actions = http_get(base + "/admin/actions").get("actions", [])
+        check(actions and actions[-1]["action"] == "typing"
+              and str(actions[-1]["chat_id"]) == "123456789",
+              "mock stored sendChatAction(typing) for correct chat")
 
         # 7. inbound: inject a getUpdates payload -> inbound_message
         #    (parent_by_chat defaults to false -> NO parent external id)

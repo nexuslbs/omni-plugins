@@ -10,6 +10,7 @@ Implements the OmniAgent platform plugin protocol (JSON lines over stdin/stdout)
   * edit_message    -> Telegram Bot API editMessageText
   * delete_message  -> Telegram Bot API deleteMessage
   * react           -> Telegram Bot API setMessageReaction
+  * typing          -> Telegram Bot API sendChatAction (action=typing)
 
 Inbound: when polling_enabled is true a background thread long-polls
 getUpdates (offset-based) and emits `inbound_message` notifications to
@@ -198,6 +199,19 @@ class TelegramPlatform:
             log.error("delete_message failed: %s", e)
             self._respond(req_id, error={"code": -2, "message": str(e)})
 
+    def handle_typing(self, req_id, params):
+        resource = params.get("resource_identifier", "")
+        try:
+            self._api_post("sendChatAction", {
+                "chat_id": self._chat_id(resource),
+                "action": "typing",
+            })
+            self._respond(req_id, result={"typing": True})
+            log.info("Typing indicator sent to chat %s", resource)
+        except TelegramApiError as e:
+            log.error("typing failed: %s", e)
+            self._respond(req_id, error={"code": -2, "message": str(e)})
+
     def handle_react(self, req_id, params):
         resource = params.get("resource_identifier", "")
         external_id = params.get("external_id", "")
@@ -360,6 +374,8 @@ class TelegramPlatform:
                 self.handle_delete_message(req_id, params)
             elif method == "react":
                 self.handle_react(req_id, params)
+            elif method == "typing":
+                self.handle_typing(req_id, params)
             elif method == "shutdown":
                 self._stop.set()
                 self._respond(req_id, result={"shutdown": True})

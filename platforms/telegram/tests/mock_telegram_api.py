@@ -10,6 +10,7 @@ Implements the Bot API endpoints the plugin uses, backed by in-memory state:
   POST /bot<token>/editMessageText     updates the stored text
   POST /bot<token>/deleteMessage       removes the stored message
   POST /bot<token>/setMessageReaction  stores the reaction
+  POST /bot<token>/sendChatAction      stores the chat action
   POST /bot<token>/getMe               returns a fake bot identity
 
 Admin endpoints (for tests, no token required):
@@ -41,6 +42,7 @@ class MockTelegramState:
     def __init__(self):
         self.lock = threading.Lock()
         self.sent_messages = []      # list of dicts, in send order
+        self.chat_actions = []      # list of {chat_id, action, date}
         self.reactions = []          # list of {chat_id, message_id, reaction}
         self.updates = {}            # update_id -> update dict (queue)
         self.next_update_id = 1
@@ -83,6 +85,12 @@ class MockTelegramState:
             self.reactions.append({"chat_id": chat_id,
                                    "message_id": message_id,
                                    "reaction": reaction})
+
+    def record_chat_action(self, chat_id, action):
+        with self.lock:
+            self.chat_actions.append({"chat_id": chat_id,
+                                      "action": action,
+                                      "date": int(time.time())})
 
     # -- inbound update queue ------------------------------------------
     def inject_update(self, update):
@@ -225,6 +233,10 @@ class MockHandler(BaseHTTPRequestHandler):
                                        body.get("message_id"),
                                        body.get("reaction"))
             self._json(200, {"ok": True, "result": {"ok": True}})
+        elif method == "sendChatAction":
+            self.state.record_chat_action(body.get("chat_id"),
+                                          body.get("action"))
+            self._json(200, {"ok": True, "result": {"ok": True}})
         else:
             self._json(404, {"ok": False, "description": "unknown method: " + method})
 
@@ -236,6 +248,8 @@ class MockHandler(BaseHTTPRequestHandler):
             self._json(200, {"ok": True, "messages": self.state.sent_messages})
         elif path == "/admin/reactions":
             self._json(200, {"ok": True, "reactions": self.state.reactions})
+        elif path == "/admin/actions":
+            self._json(200, {"ok": True, "actions": self.state.chat_actions})
         elif path == "/admin/updates":
             self._json(200, {"ok": True, "updates": sorted(
                 self.state.updates.values(), key=lambda u: u["update_id"])})
@@ -251,6 +265,8 @@ class MockHandler(BaseHTTPRequestHandler):
             self._json(200, {"ok": True, "messages": self.state.sent_messages})
         elif path == "/admin/reactions":
             self._json(200, {"ok": True, "reactions": self.state.reactions})
+        elif path == "/admin/actions":
+            self._json(200, {"ok": True, "actions": self.state.chat_actions})
         elif path == "/admin/updates":
             self._json(200, {"ok": True, "updates": sorted(
                 self.state.updates.values(), key=lambda u: u["update_id"])})

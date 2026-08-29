@@ -21,6 +21,7 @@ A Python implementation of the omniagent **telegram platform plugin**
 * `edit_message` → `POST editMessageText`
 * `delete_message` → `POST deleteMessage`
 * `react` → `POST setMessageReaction`
+* `typing` → `POST sendChatAction` (action `typing`)
 * inbound → background long-poll of `getUpdates` (offset-based); each inbound
   message is emitted to stdout as an `inbound_message` notification
   (`resource_identifier` = chat id, `text`, `external_id` = message_id,
@@ -53,9 +54,9 @@ nothing ever touches the real Telegram API and no real credentials are used.
 
 The mock implements `getUpdates` (long-poll + offset confirmation),
 `sendMessage`, `editMessageText`, `deleteMessage`, `setMessageReaction`,
-`getMe`, plus admin endpoints for tests: `POST /admin/inject`,
-`GET /admin/sent`, `GET /admin/reactions`, `GET /admin/updates`,
-`POST /admin/reset`.
+`getMe`, `sendChatAction`, plus admin endpoints for tests:
+`POST /admin/inject`, `GET /admin/sent`, `GET /admin/actions`,
+`GET /admin/reactions`, `GET /admin/updates`, `POST /admin/reset`.
 
 ## Real full test (operator - requires a NEW bot, never Hermes')
 
