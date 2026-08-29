@@ -202,6 +202,9 @@ class TelegramPlatform:
         resource = params.get("resource_identifier", "")
         external_id = params.get("external_id", "")
         emoji = params.get("emoji", "")
+        # Map Mattermost-style shortcodes to the unicode emoji the Telegram
+        # Bot API requires; unknown values fall back to the bare name.
+        emoji = SHORTCODE_TO_EMOJI.get(emoji, emoji.strip(":"))
         try:
             reaction = [{"type": "emoji", "emoji": emoji}] if emoji else []
             self._api_post("setMessageReaction", {
@@ -369,6 +372,18 @@ class TelegramPlatform:
                     })
         self._stop.set()
         log.info("Telegram platform plugin shutting down (stdin closed)")
+
+
+# Mattermost-style emoji shortcodes used by the core for status reactions
+# (e.g. ":o:", ":handshake:") are not valid Telegram emoji. Map the known
+# ones to their unicode glyphs before calling setMessageReaction.
+SHORTCODE_TO_EMOJI = {
+    ":white_check_mark:": "\u2705",
+    ":x:": "\u274c",
+    ":broken_heart:": "\U0001f494",
+    ":o:": "\U0001f17e\ufe0f",
+    ":handshake:": "\U0001f91d",
+}
 
 
 class TelegramApiError(Exception):

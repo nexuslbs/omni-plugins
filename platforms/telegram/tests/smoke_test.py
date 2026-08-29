@@ -229,6 +229,23 @@ def main():
         check(reactions and str(reactions[-1]["message_id"]) == str(ext2),
               "mock stored setMessageReaction")
 
+        # 6b. shortcode mapping: ":handshake:" -> the unicode handshake emoji
+        r = plat.call("react", {
+            "resource_identifier": "123456789",
+            "external_id": ext2,
+            "emoji": ":handshake:",
+        })
+        check(r.get("result", {}).get("reacted") is True,
+              "react shortcode -> reacted:true")
+        reactions = http_get(base + "/admin/reactions").get("reactions", [])
+        # json.dumps uses ensure_ascii by default, so the emoji arrives in
+        # escaped surrogate form; parse the stored reaction JSON to compare.
+        check(
+            reactions
+            and json.loads(reactions[-1]["reaction"])[0]["emoji"] == "\U0001f91d",
+            "mock stored mapped unicode handshake for shortcode",
+        )
+
         # 7. inbound: inject a getUpdates payload -> inbound_message
         #    (parent_by_chat defaults to false -> NO parent external id)
         http_post(base + "/admin/inject", {
