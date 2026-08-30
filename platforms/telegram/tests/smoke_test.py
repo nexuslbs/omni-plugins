@@ -253,18 +253,96 @@ def main():
               and "reply_to_message_id" not in sent[-1],
               "stale reply id -> standalone retry keeps the message")
 
+        # 3f. markdown rendering: deliver content with markdown constructs and
+        #     verify the mock receives parse_mode=HTML with the markdown
+        #     converted to Telegram HTML (no raw ** markers).
+        r = plat.call("deliver", {
+            "resource_identifier": "123456789",
+            "content": "**bold** and _italic_ and `code`",
+        })
+        res = r.get("result", {})
+        check(res.get("delivered") is True,
+              "deliver(markdown) -> delivered:true")
+        sent = http_get(base + "/admin/sent").get("messages", [])
+        m = sent[-1]
+        check(m.get("parse_mode") == "HTML"
+              and m["text"] == "<b>bold</b> and <i>italic</i> and <code>code</code>",
+              "deliver(markdown) -> parse_mode=HTML, markdown converted to HTML")
+        check("**" not in m["text"],
+              "deliver(markdown) -> no raw ** in sent text")
+
+        # 3g. mixed block-level markdown (heading, fenced code, list,
+        #     blockquote, link) renders as Telegram HTML; inside a fenced
+        #     code block ** stays literal code (correct for code content).
+        r = plat.call("deliver", {
+            "resource_identifier": "123456789",
+            "content": (
+                "# Heading\n"
+                "```\nfenced **code**\n```\n"
+                "- item one\n"
+                "> quoted\n"
+                "[link](https://example.com)"
+            ),
+        })
+        res = r.get("result", {})
+        check(res.get("delivered") is True,
+              "deliver(blocks) -> delivered:true")
+        sent = http_get(base + "/admin/sent").get("messages", [])
+        m = sent[-1]
+        check(m.get("parse_mode") == "HTML" and "```" not in m["text"],
+              "deliver(blocks) -> parse_mode=HTML, no raw fence markers")
+        check(m["text"].startswith("<b>Heading</b>")
+              and "<pre>fenced **code**</pre>" in m["text"]
+              and "\u2022 item one" in m["text"]
+              and "<blockquote>quoted</blockquote>" in m["text"]
+              and '<a href="https://example.com">link</a>' in m["text"],
+              "deliver(blocks) -> heading/fence/list/quote/link rendered as HTML")
+
+        # 3h. degenerate input: unbalanced markers degrade (markers stripped,
+        #     message still delivered, never a send error).
+        r = plat.call("deliver", {
+            "resource_identifier": "123456789",
+            "content": "unclosed **bold and `tick and _under",
+        })
+        res = r.get("result", {})
+        check(res.get("delivered") is True,
+              "deliver(unbalanced) -> delivered:true (no error)")
+        sent = http_get(base + "/admin/sent").get("messages", [])
+        m = sent[-1]
+        check("**" not in m["text"] and "`" not in m["text"],
+              "deliver(unbalanced) -> raw markers stripped from sent text")
+
+        # 3i. HTML rejection fallback: the mock rejects the parse_mode=HTML
+        #     send (REJECT_HTML sentinel); the plugin retries as plain text
+        #     with markers stripped, so the message is never dropped and
+        #     never shows raw syntax.
+        r = plat.call("deliver", {
+            "resource_identifier": "123456789",
+            "content": "REJECT_HTML with **bold** here",
+        })
+        res = r.get("result", {})
+        check(res.get("delivered") is True,
+              "deliver(HTML rejected) -> delivered:true via plain fallback")
+        sent = http_get(base + "/admin/sent").get("messages", [])
+        m = sent[-1]
+        check("parse_mode" not in m
+              and m["text"] == "REJECT_HTML with bold here",
+              "deliver(HTML rejected) -> plain-text retry strips markers, "
+              "no parse_mode")
+
         # 4. edit_message -> editMessageText
         ext_id = res["external_id"]
         r = plat.call("edit_message", {
             "resource_identifier": "123456789",
             "external_id": ext_id,
-            "content": "Edited hello",
+            "content": "Edited **hello**",
         })
         check(r.get("result", {}).get("edited") is True,
               "edit_message -> edited:true")
         sent = http_get(base + "/admin/sent").get("messages", [])
-        check(sent and sent[-1]["text"] == "Edited hello",
-              "mock message text updated by editMessageText")
+        check(sent and sent[-1]["text"] == "Edited <b>hello</b>"
+              and sent[-1].get("parse_mode") == "HTML",
+              "editMessageText -> markdown rendered to HTML, parse_mode=HTML")
 
         # 5. delete_message -> deleteMessage
         r = plat.call("delete_message", {

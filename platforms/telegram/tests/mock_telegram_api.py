@@ -61,12 +61,14 @@ class MockTelegramState:
             self.sent_messages.append(entry)
             return mid
 
-    def edit_text(self, chat_id, message_id, text):
+    def edit_text(self, chat_id, message_id, text, parse_mode=None):
         with self.lock:
             for m in self.sent_messages:
                 if (str(m["message_id"]) == str(message_id)
                         and str(m["chat_id"]) == str(chat_id)):
                     m["text"] = text
+                    if parse_mode is not None:
+                        m["parse_mode"] = parse_mode
                     return True
             return False
 
@@ -210,9 +212,18 @@ class MockHandler(BaseHTTPRequestHandler):
             if "reply_to_message_id" in body and str(body.get("reply_to_message_id")) == "404":
                 self._json(400, {"ok": False, "description": "message not found"})
                 return
+            # HTML rejection hook: a parse_mode=HTML send whose text contains
+            # the REJECT_HTML sentinel simulates Telegram refusing to parse
+            # the entities, so the plugin's plain-text fallback is testable.
+            if body.get("parse_mode") == "HTML" and "REJECT_HTML" in text:
+                self._json(400, {"ok": False,
+                                 "description": "can't parse entities: mock rejection"})
+                return
             extra = {"chat": {"id": chat_id, "type": "private"}}
             if "reply_to_message_id" in body:
                 extra["reply_to_message_id"] = body.get("reply_to_message_id")
+            if "parse_mode" in body:
+                extra["parse_mode"] = body.get("parse_mode")
             mid = self.state.record_sent(chat_id, text,
                                          extra)
             self._json(200, {"ok": True, "result": {
@@ -224,7 +235,8 @@ class MockHandler(BaseHTTPRequestHandler):
         elif method == "editMessageText":
             ok = self.state.edit_text(body.get("chat_id"),
                                       body.get("message_id"),
-                                      body.get("text", ""))
+                                      body.get("text", ""),
+                                      body.get("parse_mode"))
             if not ok:
                 self._json(400, {"ok": False, "description": "message not found"})
                 return

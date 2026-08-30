@@ -32,6 +32,7 @@ Uses only the Python standard library (urllib) - no external dependencies.
 import json
 import logging
 import os
+import re
 import sys
 import threading
 import time
@@ -197,13 +198,7 @@ class TelegramPlatform:
                     reply_to,
                 )
         try:
-            api_params = {
-                "chat_id": self._chat_id(resource),
-                "text": content,
-            }
-            if reply_to_int is not None:
-                api_params["reply_to_message_id"] = reply_to_int
-            result = self._api_post("sendMessage", api_params)
+            result = self._send_rendered(resource, content, reply_to_int)
             external_id = str(result.get("message_id", ""))
             self._respond(req_id, result={
                 "delivered": True,
@@ -221,10 +216,7 @@ class TelegramPlatform:
                     reply_to_int, e,
                 )
                 try:
-                    result = self._api_post("sendMessage", {
-                        "chat_id": self._chat_id(resource),
-                        "text": content,
-                    })
+                    result = self._send_rendered(resource, content, None)
                     external_id = str(result.get("message_id", ""))
                     self._respond(req_id, result={
                         "delivered": True,
@@ -242,16 +234,64 @@ class TelegramPlatform:
             log.error("deliver failed: %s", e)
             self._respond(req_id, error={"code": -2, "message": str(e)})
 
+    def _send_rendered(self, resource, content, reply_to_int):
+        """sendMessage with the content rendered from markdown to Telegram HTML.
+
+        The message is sent with parse_mode=HTML so **bold**, *italic*,
+        `code`, fenced blocks, links, headings and lists render as real
+        Telegram formatting instead of raw markdown characters. If Telegram
+        rejects the HTML (parse error on unusual input), the message is
+        re-sent once as plain text with the markdown markers stripped, so a
+        message is never dropped and never shows raw syntax.
+        """
+        try:
+            params = {
+                "chat_id": self._chat_id(resource),
+                "text": markdown_to_html(content),
+                "parse_mode": "HTML",
+            }
+            if reply_to_int is not None:
+                params["reply_to_message_id"] = reply_to_int
+            return self._api_post("sendMessage", params)
+        except TelegramApiError as html_err:
+            if not _is_parse_error(html_err):
+                raise
+            log.warning(
+                "sendMessage HTML rejected (%s) - retrying plain text",
+                html_err,
+            )
+            params = {
+                "chat_id": self._chat_id(resource),
+                "text": strip_markdown(content),
+            }
+            if reply_to_int is not None:
+                params["reply_to_message_id"] = reply_to_int
+            return self._api_post("sendMessage", params)
+
     def handle_edit_message(self, req_id, params):
         resource = params.get("resource_identifier", "")
         external_id = params.get("external_id", "")
         content = params.get("content", "")
         try:
-            self._api_post("editMessageText", {
-                "chat_id": self._chat_id(resource),
-                "message_id": external_id,
-                "text": content,
-            })
+            try:
+                self._api_post("editMessageText", {
+                    "chat_id": self._chat_id(resource),
+                    "message_id": external_id,
+                    "text": markdown_to_html(content),
+                    "parse_mode": "HTML",
+                })
+            except TelegramApiError as e:
+                if not _is_parse_error(e):
+                    raise
+                log.warning(
+                    "editMessageText HTML rejected (%s) - retrying plain text",
+                    e,
+                )
+                self._api_post("editMessageText", {
+                    "chat_id": self._chat_id(resource),
+                    "message_id": external_id,
+                    "text": strip_markdown(content),
+                })
             self._respond(req_id, result={"edited": True})
             log.info("Edited message %s in chat %s", external_id, resource)
         except TelegramApiError as e:
@@ -473,6 +513,164 @@ SHORTCODE_TO_EMOJI = {
     ":o:": "\U0001f17e\ufe0f",
     ":handshake:": "\U0001f91d",
 }
+
+
+# ----------------------------------------------------------------------
+# Markdown -> Telegram HTML rendering (stdlib only)
+# ----------------------------------------------------------------------
+# Outbound messages carry CommonMark-ish markdown (the LLM output). Telegram
+# renders formatting only when a message is sent with parse_mode set, so the
+# markdown is converted to Telegram's HTML dialect here. Supported constructs
+# render as real formatting; unbalanced or unsupported input degrades
+# gracefully (markers stripped, text HTML-escaped) and can never expose raw
+# markdown syntax or break out of the HTML context.
+_HTML_ESCAPES = {"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;"}
+_HTML_ESCAPE_RE = re.compile(r'[&<>"]')
+_CODE_SPAN_RE = re.compile(r"`([^`\n]+)`")
+_LINK_RE = re.compile(r"\[([^\]]+)\]\(([^)\s]+)\)")
+_BOLD_RE = re.compile(r"\*\*([^*]+)\*\*")
+_UNDER_BOLD_RE = re.compile(r"__([^_]+)__")
+_ITALIC_RE = re.compile(r"(?<!\*)\*([^*\n]+)\*(?!\*)")
+_UNDER_ITALIC_RE = re.compile(r"(?<![A-Za-z0-9_])_([^_\n]+)_(?![A-Za-z0-9_])")
+_STRIKE_RE = re.compile(r"~~([^~\n]+)~~")
+_FENCE_RE = re.compile(r"^\s*```")
+_HEADING_RE = re.compile(r"^#{1,6}\s+(.+)$")
+_BLOCKQUOTE_RE = re.compile(r"^>\s?(.*)$")
+_HR_RE = re.compile(r"^\s*([-*_])\s*\1\s*\1\s*$")
+_UL_RE = re.compile(r"^(\s*)[-*+]\s+(.+)$")
+_OL_RE = re.compile(r"^(\s*)(\d{1,3})[.)]\s+(.+)$")
+_CODE_PLACEHOLDER = "\x00CODE{}\x00"
+_LINK_PLACEHOLDER = "\x00LINK{}\x00"
+
+
+def _escape_html(text):
+    return _HTML_ESCAPE_RE.sub(lambda m: _HTML_ESCAPES[m.group(0)], text)
+
+
+def _convert_inline(text):
+    """Convert inline markdown in ALREADY-ESCAPED text to Telegram HTML."""
+    code_spans = []
+    links = []
+
+    def _keep_code(m):
+        code_spans.append(m.group(1))
+        return _CODE_PLACEHOLDER.format(len(code_spans) - 1)
+
+    def _keep_link(m):
+        links.append((m.group(1), m.group(2)))
+        return _LINK_PLACEHOLDER.format(len(links) - 1)
+
+    s = _CODE_SPAN_RE.sub(_keep_code, text)
+    s = _LINK_RE.sub(_keep_link, s)
+    s = _BOLD_RE.sub(r"<b>\1</b>", s)
+    s = _UNDER_BOLD_RE.sub(r"<b>\1</b>", s)
+    s = _ITALIC_RE.sub(r"<i>\1</i>", s)
+    s = _UNDER_ITALIC_RE.sub(r"<i>\1</i>", s)
+    s = _STRIKE_RE.sub(r"<s>\1</s>", s)
+    # Unbalanced leftovers: strip the markers so no raw syntax is shown.
+    s = s.replace("**", "").replace("__", "").replace("`", "")
+    for i, (label, url) in enumerate(links):
+        # Telegram disallows nested tags inside <a>, so the label is plain.
+        clean_label = label.replace("**", "").replace("__", "").replace("`", "")
+        s = s.replace(_LINK_PLACEHOLDER.format(i),
+                      '<a href="' + url + '">' + clean_label + "</a>")
+    for i, content in enumerate(code_spans):
+        s = s.replace(_CODE_PLACEHOLDER.format(i), "<code>" + content + "</code>")
+    return s
+
+
+def _convert_line(line):
+    """Convert one non-code line (raw markdown) to Telegram HTML."""
+    m = _HEADING_RE.match(line)
+    if m:
+        return "<b>" + _convert_inline(_escape_html(m.group(1))) + "</b>"
+    m = _BLOCKQUOTE_RE.match(line)
+    if m:
+        return "<blockquote>" + _convert_inline(_escape_html(m.group(1))) \
+            + "</blockquote>"
+    if _HR_RE.match(line):
+        return "\u2015" * 8
+    m = _UL_RE.match(line)
+    if m:
+        return m.group(1) + "\u2022 " \
+            + _convert_inline(_escape_html(m.group(2)))
+    m = _OL_RE.match(line)
+    if m:
+        return m.group(1) + m.group(2) + ". " \
+            + _convert_inline(_escape_html(m.group(3)))
+    return _convert_inline(_escape_html(line))
+
+
+def markdown_to_html(text):
+    """Convert markdown text to Telegram-compatible HTML.
+
+    Fenced code blocks become <pre>, headings become bold, blockquotes use
+    the <blockquote> tag, list markers become bullets, and inline formatting
+    (bold/italic/code/links/strikethrough) renders as the matching HTML tag.
+    All other text is HTML-escaped, so a message can never expose raw
+    markdown characters or break out of the HTML context.
+    """
+    lines = text.split("\n")
+    out = []
+    i = 0
+    in_fence = False
+    fence_buf = []
+    while i < len(lines):
+        line = lines[i]
+        if _FENCE_RE.match(line):
+            if not in_fence:
+                in_fence = True
+                fence_buf = []
+            else:
+                in_fence = False
+                out.append("<pre>" + _escape_html("\n".join(fence_buf))
+                           + "</pre>")
+            i += 1
+            continue
+        if in_fence:
+            fence_buf.append(line)
+            i += 1
+            continue
+        out.append(_convert_line(line))
+        i += 1
+    if in_fence:
+        # Unbalanced fence: render the collected lines as a code block anyway
+        # (never show the raw ``` marker).
+        out.append("<pre>" + _escape_html("\n".join(fence_buf)) + "</pre>")
+    return "\n".join(out)
+
+
+def strip_markdown(text):
+    """Plain-text fallback: remove markdown markers, keep the text readable.
+
+    Used when Telegram rejects the HTML-rendered message; the message is then
+    sent without parse_mode and without raw markdown syntax.
+    """
+    lines = []
+    in_fence = False
+    for line in text.split("\n"):
+        if _FENCE_RE.match(line):
+            in_fence = not in_fence
+            continue
+        if in_fence:
+            lines.append(line)
+            continue
+        s = _HEADING_RE.sub(r"\1", line)
+        s = _BLOCKQUOTE_RE.sub(r"\1", s)
+        s = _HR_RE.sub("", s)
+        s = _UL_RE.sub(r"\1\u2022 \2", s)
+        s = _OL_RE.sub(r"\1\2. \3", s)
+        s = _LINK_RE.sub(r"\1 (\2)", s)
+        s = s.replace("**", "").replace("__", "").replace("`", "")
+        lines.append(s)
+    return "\n".join(lines)
+
+
+def _is_parse_error(err):
+    """True when a TelegramApiError is a parse_mode/entity rejection (the
+    case where retrying as plain text can succeed)."""
+    msg = str(err).lower()
+    return "parse" in msg or "entity" in msg
 
 
 class TelegramApiError(Exception):
