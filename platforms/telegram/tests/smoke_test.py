@@ -18,6 +18,10 @@ Covers:
                          config true: inbound messages carry the chat id as
                          metadata["root_id"] (the envelope key omniagent
                          reads as the parent external id)
+  * flat configure    -> configure with FLAT params (no "config" key),
+                         exactly like the real core sends (string values):
+                         bot_token is stored, polling starts, and an
+                         injected update flows back as inbound_message
 
 Usage:
     python3 tests/smoke_test.py [--port 8091]
@@ -362,6 +366,41 @@ def main():
         r = plat.call("no_such_method")
         check(r.get("error", {}).get("code") == -1,
               "unknown method -> error {code:-1}")
+
+        # 10. FLAT configure (core protocol): the real core sends the whole
+        #     plugins.yml env map FLAT with STRING values and NO "config" key
+        #     (build_configure_request -> serde_json::json!(env)). Verify a
+        #     fresh plugin instance configured this way stores bot_token,
+        #     starts polling and delivers an injected update as
+        #     inbound_message. Regression test for the prod bug where the
+        #     plugin read params["config"] (absent), so the flat bot_token
+        #     was dropped and polling never started.
+        plat.stop()
+        plat = PlatformProc()
+        r = plat.call("configure", {
+            "bot_token": MOCK_TOKEN,
+            "api_base_url": base,
+            "polling_enabled": "on",
+            "poll_interval_secs": "1",
+        })
+        check(r.get("result", {}).get("configured") is True,
+              "flat configure (core protocol) -> configured:true")
+        http_post(base + "/admin/inject", {
+            "update_id": 9500,
+            "message": {
+                "message_id": 790,
+                "date": 1700000010,
+                "chat": {"id": 123456, "type": "private"},
+                "from": {"id": 555, "first_name": "Mock"},
+                "text": "flat protocol inbound hello",
+            },
+        })
+        n = plat.expect_notification("inbound_message", timeout=25)
+        p = n.get("params", {})
+        check(p.get("resource_identifier") == "123456"
+              and p.get("text") == "flat protocol inbound hello"
+              and p.get("external_id") == "790",
+              "flat configure: injected update emitted as inbound_message")
 
     finally:
         if plat:

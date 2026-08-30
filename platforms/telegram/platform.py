@@ -43,6 +43,20 @@ DEFAULT_API_BASE = "https://api.telegram.org"
 POLL_LONGPOLL_SECS = 30  # Telegram getUpdates long-poll upper bound
 
 
+def _as_bool(value, default=False):
+    """Coerce a configure value to bool.
+
+    The core sends configure params as the FLAT plugins.yml env map with
+    string values (e.g. "on", "false"); the plugin's own tests send real
+    booleans inside a "config" dict. Both must behave identically.
+    """
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return default
+    return str(value).strip().lower() in ("1", "true", "on", "yes")
+
+
 class TelegramPlatform:
     def __init__(self):
         self.bot_token = ""
@@ -125,17 +139,22 @@ class TelegramPlatform:
         log.info("Initialized: telegram")
 
     def handle_configure(self, req_id, params):
-        config = params.get("config", {}) or {}
+        # The core sends configure params FLAT: the resolved plugins.yml env
+        # map, e.g. {"bot_token": "...", "polling_enabled": "on"} (see
+        # build_configure_request in src/platform/external/mod.rs). Older
+        # callers and the plugin's own tests wrap the values under a "config"
+        # key; accept both shapes.
+        config = params.get("config") or params
         self.bot_token = str(config.get("bot_token", "") or "").strip()
         self.api_base_url = str(config.get("api_base_url", "") or "").strip() \
             or DEFAULT_API_BASE
-        self.polling_enabled = bool(config.get("polling_enabled", True))
+        self.polling_enabled = _as_bool(config.get("polling_enabled", True))
         try:
             interval = int(config.get("poll_interval_secs", 5))
             self.poll_interval_secs = max(1, min(300, interval))
         except (TypeError, ValueError):
             self.poll_interval_secs = 5
-        self.parent_by_chat = bool(config.get("parent_by_chat", False))
+        self.parent_by_chat = _as_bool(config.get("parent_by_chat", False))
         self._configured = True
         log.info("Configured: api_base=%s polling=%s interval=%ss "
                  "parent_by_chat=%s token_set=%s",
