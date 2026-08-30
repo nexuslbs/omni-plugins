@@ -402,6 +402,52 @@ def main():
               and p.get("external_id") == "790",
               "flat configure: injected update emitted as inbound_message")
 
+
+        # 11. first_last_only config flag round-trip: the flag is parsed from
+        #     both the nested "config" dict and the FLAT core protocol map
+        #     (string values), defaults to false when absent, and is echoed
+        #     back in the configure result so the core can rely on it.
+        plat.stop()
+        plat = PlatformProc()
+        r = plat.call("configure", {"config": {
+            "bot_token": MOCK_TOKEN,
+            "api_base_url": base,
+            "polling_enabled": True,
+            "poll_interval_secs": 1,
+            "first_last_only": True,
+        }})
+        res = r.get("result", {})
+        check(res.get("configured") is True
+              and res.get("first_last_only") is True,
+              "configure(first_last_only=true) -> first_last_only:true")
+
+        plat.stop()
+        plat = PlatformProc()
+        r = plat.call("configure", {
+            "bot_token": MOCK_TOKEN,
+            "api_base_url": base,
+            "polling_enabled": "on",
+            "poll_interval_secs": "1",
+            "first_last_only": "on",
+        })
+        res = r.get("result", {})
+        check(res.get("configured") is True
+              and res.get("first_last_only") is True,
+              "flat configure(first_last_only=on) -> first_last_only:true")
+
+        plat.stop()
+        plat = PlatformProc()
+        r = plat.call("configure", {"config": {
+            "bot_token": MOCK_TOKEN,
+            "api_base_url": base,
+            "polling_enabled": True,
+            "poll_interval_secs": 1,
+        }})
+        res = r.get("result", {})
+        check(res.get("configured") is True
+              and res.get("first_last_only") is False,
+              "configure (flag absent) -> first_last_only defaults to false")
+
     finally:
         if plat:
             plat.stop()

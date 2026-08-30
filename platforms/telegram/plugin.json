@@ -56,6 +56,14 @@
       "required": false,
       "default": false,
       "description": "When true, every inbound user message carries the chat id as the parent external id (the same value for all messages from that chat), so threads created from the same chat always share one parent and pending messages from that chat can merge into a processing thread (existing omniagent pending/merge machinery). Default false: no parent id - current behavior."
+    },
+    {
+      "key": "first_last_only",
+      "label": "First/last message only",
+      "type": "boolean",
+      "required": false,
+      "default": false,
+      "description": "When true, only the FIRST and LAST messages of a thread run are delivered to the chat; all intermediate messages are collapsed (suppressed) so a long thread no longer floods the chat. Default false: every thread message is delivered (current behavior)."
     }
   ]
 }

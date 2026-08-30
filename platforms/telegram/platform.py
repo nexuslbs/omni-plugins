@@ -16,6 +16,12 @@ Inbound: when polling_enabled is true a background thread long-polls
 getUpdates (offset-based) and emits `inbound_message` notifications to
 stdout, exactly like the mattermost platform does.
 
+Config flag `first_last_only` (boolean, default false): the omniagent core
+reads this flag from the telegram plugin config and, when true, delivers only
+the FIRST and LAST messages of a thread run to this plugin (intermediate
+thread messages are collapsed). The plugin itself parses and echoes the flag
+so the configure round-trip is complete and testable.
+
 Mock support: the `api_base_url` config override lets the whole plugin run
 against a mock Telegram Bot API server (see tests/mock_telegram_api.py) -
 no real bot token is ever needed for tests.
@@ -64,6 +70,7 @@ class TelegramPlatform:
         self.polling_enabled = False
         self.poll_interval_secs = 5
         self.parent_by_chat = False
+        self.first_last_only = False
         self._offset = None
         self._poll_thread = None
         self._stop = threading.Event()
@@ -155,12 +162,13 @@ class TelegramPlatform:
         except (TypeError, ValueError):
             self.poll_interval_secs = 5
         self.parent_by_chat = _as_bool(config.get("parent_by_chat", False))
+        self.first_last_only = _as_bool(config.get("first_last_only", False))
         self._configured = True
         log.info("Configured: api_base=%s polling=%s interval=%ss "
-                 "parent_by_chat=%s token_set=%s",
+                 "parent_by_chat=%s first_last_only=%s token_set=%s",
                  self.api_base_url, self.polling_enabled,
                  self.poll_interval_secs, self.parent_by_chat,
-                 bool(self.bot_token))
+                 self.first_last_only, bool(self.bot_token))
 
         if self.polling_enabled and self.bot_token:
             self._start_polling()
@@ -168,6 +176,7 @@ class TelegramPlatform:
         self._respond(req_id, result={
             "configured": True,
             "polling_enabled": self.polling_enabled and bool(self.bot_token),
+            "first_last_only": self.first_last_only,
         })
 
     def handle_deliver(self, req_id, params):
