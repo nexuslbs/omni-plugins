@@ -658,7 +658,7 @@ def strip_markdown(text):
         s = _HEADING_RE.sub(r"\1", line)
         s = _BLOCKQUOTE_RE.sub(r"\1", s)
         s = _HR_RE.sub("", s)
-        s = _UL_RE.sub(r"\1\u2022 \2", s)
+        s = _UL_RE.sub(lambda m: m.group(1) + "\u2022 " + m.group(2), s)
         s = _OL_RE.sub(r"\1\2. \3", s)
         s = _LINK_RE.sub(r"\1 (\2)", s)
         s = s.replace("**", "").replace("__", "").replace("`", "")
