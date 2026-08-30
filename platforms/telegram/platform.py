@@ -182,18 +182,63 @@ class TelegramPlatform:
     def handle_deliver(self, req_id, params):
         resource = params.get("resource_identifier", "")
         content = params.get("content", "")
+        # The core sets reply_to_message_id (a string) on FINAL thread
+        # deliveries: the last message of a thread must be sent as a REPLY to
+        # the thread's seq-0 (first) message, never as a standalone top-level
+        # message. Telegram requires an integer message_id.
+        reply_to = params.get("reply_to_message_id") or None
+        reply_to_int = None
+        if reply_to is not None:
+            try:
+                reply_to_int = int(str(reply_to).strip())
+            except (TypeError, ValueError):
+                log.warning(
+                    "deliver: invalid reply_to_message_id %r - sending standalone",
+                    reply_to,
+                )
         try:
-            result = self._api_post("sendMessage", {
+            api_params = {
                 "chat_id": self._chat_id(resource),
                 "text": content,
-            })
+            }
+            if reply_to_int is not None:
+                api_params["reply_to_message_id"] = reply_to_int
+            result = self._api_post("sendMessage", api_params)
             external_id = str(result.get("message_id", ""))
             self._respond(req_id, result={
                 "delivered": True,
                 "external_id": external_id,
             })
-            log.info("Delivered message %s to chat %s", external_id, resource)
+            log.info("Delivered message %s to chat %s (reply_to=%s)",
+                     external_id, resource, reply_to_int)
         except TelegramApiError as e:
+            if reply_to_int is not None:
+                # The seq-0 message may have been deleted or the id may be
+                # stale (legacy thread): fall back to the current standalone
+                # send and log it - the message is never dropped.
+                log.warning(
+                    "deliver reply to %s failed (%s) - retrying standalone",
+                    reply_to_int, e,
+                )
+                try:
+                    result = self._api_post("sendMessage", {
+                        "chat_id": self._chat_id(resource),
+                        "text": content,
+                    })
+                    external_id = str(result.get("message_id", ""))
+                    self._respond(req_id, result={
+                        "delivered": True,
+                        "external_id": external_id,
+                    })
+                    log.info(
+                        "Delivered message %s to chat %s (standalone fallback)",
+                        external_id, resource,
+                    )
+                    return
+                except TelegramApiError as e2:
+                    log.error("deliver failed: %s", e2)
+                    self._respond(req_id, error={"code": -2, "message": str(e2)})
+                    return
             log.error("deliver failed: %s", e)
             self._respond(req_id, error={"code": -2, "message": str(e)})
 

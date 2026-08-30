@@ -193,6 +193,66 @@ def main():
               and sent[0]["text"] == "Hello from omniagent",
               "mock received sendMessage with correct chat_id/text")
 
+        # 3b. deliver with reply_to_message_id -> the final message is sent as
+        #     a REPLY to the thread's seq-0 message (Telegram reply threading).
+        r = plat.call("deliver", {
+            "resource_identifier": "123456789",
+            "content": "Final reply",
+            "msg_type": "summary",
+            "reply_to_message_id": "101",
+        })
+        res = r.get("result", {})
+        check(res.get("delivered") is True and res.get("external_id"),
+              "deliver(reply_to_message_id) -> delivered:true + external_id")
+        sent = http_get(base + "/admin/sent").get("messages", [])
+        check(sent and sent[-1]["text"] == "Final reply"
+              and str(sent[-1].get("reply_to_message_id")) == "101",
+              "mock received sendMessage with reply_to_message_id=101")
+
+        # 3c. standalone when reply_to_message_id is absent (default): the
+        #     seq-0 id is only attached to final deliveries.
+        r = plat.call("deliver", {
+            "resource_identifier": "123456789",
+            "content": "Standalone message",
+        })
+        res = r.get("result", {})
+        check(res.get("delivered") is True and res.get("external_id"),
+              "deliver (no reply_to) -> delivered:true + external_id")
+        sent = http_get(base + "/admin/sent").get("messages", [])
+        check(sent and sent[-1]["text"] == "Standalone message"
+              and "reply_to_message_id" not in sent[-1],
+              "deliver without reply_to_message_id -> standalone send")
+
+        # 3d. invalid reply_to_message_id falls back to a standalone send
+        #     (the message is never dropped).
+        r = plat.call("deliver", {
+            "resource_identifier": "123456789",
+            "content": "Invalid reply id",
+            "reply_to_message_id": "not-a-number",
+        })
+        res = r.get("result", {})
+        check(res.get("delivered") is True and res.get("external_id"),
+              "deliver(invalid reply_to) -> delivered:true (standalone fallback)")
+        sent = http_get(base + "/admin/sent").get("messages", [])
+        check(sent and sent[-1]["text"] == "Invalid reply id"
+              and "reply_to_message_id" not in sent[-1],
+              "invalid reply_to_message_id -> standalone send, message kept")
+
+        # 3e. stale seq-0 id (API rejects the reply): the plugin retries once
+        #     as a standalone send - the message is never dropped.
+        r = plat.call("deliver", {
+            "resource_identifier": "123456789",
+            "content": "Stale reply id",
+            "reply_to_message_id": "404",
+        })
+        res = r.get("result", {})
+        check(res.get("delivered") is True and res.get("external_id"),
+              "deliver(stale reply id) -> delivered:true after standalone retry")
+        sent = http_get(base + "/admin/sent").get("messages", [])
+        check(sent and sent[-1]["text"] == "Stale reply id"
+              and "reply_to_message_id" not in sent[-1],
+              "stale reply id -> standalone retry keeps the message")
+
         # 4. edit_message -> editMessageText
         ext_id = res["external_id"]
         r = plat.call("edit_message", {
@@ -203,7 +263,7 @@ def main():
         check(r.get("result", {}).get("edited") is True,
               "edit_message -> edited:true")
         sent = http_get(base + "/admin/sent").get("messages", [])
-        check(sent and sent[0]["text"] == "Edited hello",
+        check(sent and sent[-1]["text"] == "Edited hello",
               "mock message text updated by editMessageText")
 
         # 5. delete_message -> deleteMessage

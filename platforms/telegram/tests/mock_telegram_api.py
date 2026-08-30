@@ -205,8 +205,16 @@ class MockHandler(BaseHTTPRequestHandler):
         elif method == "sendMessage":
             chat_id = body.get("chat_id")
             text = body.get("text", "")
+            # Reply-targeting test hook: reply_to_message_id "404" simulates a
+            # stale seq-0 message id (the API rejects the reply).
+            if "reply_to_message_id" in body and str(body.get("reply_to_message_id")) == "404":
+                self._json(400, {"ok": False, "description": "message not found"})
+                return
+            extra = {"chat": {"id": chat_id, "type": "private"}}
+            if "reply_to_message_id" in body:
+                extra["reply_to_message_id"] = body.get("reply_to_message_id")
             mid = self.state.record_sent(chat_id, text,
-                                         {"chat": {"id": chat_id, "type": "private"}})
+                                         extra)
             self._json(200, {"ok": True, "result": {
                 "message_id": mid,
                 "chat": {"id": chat_id, "type": "private"},
