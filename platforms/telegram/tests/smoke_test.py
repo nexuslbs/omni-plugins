@@ -693,6 +693,106 @@ def main():
               and res.get("first_last_only") is False,
               "configure (flag absent) -> first_last_only defaults to false")
 
+        # 12. first_last_only collapse (plugin-scoped): with the flag on, only
+        #     the thread's FIRST message (seq-0) and the FINAL message
+        #     (is_final=true) reach the chat; intermediate deliveries are
+        #     suppressed without any Telegram API call. With the flag off
+        #     (default) every delivery is sent - core sends the full stream.
+        r = plat.call("configure", {"config": {
+            "bot_token": MOCK_TOKEN,
+            "api_base_url": base,
+            "polling_enabled": False,
+            "poll_interval_secs": 1,
+            "first_last_only": True,
+        }})
+        check(r.get("result", {}).get("configured") is True,
+              "configure(first_last_only=true) -> configured:true")
+        sent_before = len(http_get(base + "/admin/sent").get("messages", []))
+
+        # intermediate delivery (seq>0, not final) -> suppressed, no API call
+        r = plat.call("deliver", {
+            "resource_identifier": "123456789",
+            "content": "tool call record",
+            "msg_type": "tool",
+            "thread_sequence": 5,
+            "is_final": False,
+        })
+        res = r.get("result", {})
+        check(res.get("delivered") is False and res.get("suppressed") is True,
+              "first_last_only: intermediate delivery suppressed")
+        sent = http_get(base + "/admin/sent").get("messages", [])
+        check(len(sent) == sent_before,
+              "first_last_only: suppressed delivery makes NO Telegram API call")
+
+        # first message by position (seq-0, the prompt/cause) -> delivered
+        r = plat.call("deliver", {
+            "resource_identifier": "123456789",
+            "content": "seq0 prompt",
+            "thread_sequence": 0,
+        })
+        res = r.get("result", {})
+        check(res.get("delivered") is True and res.get("external_id"),
+              "first_last_only: seq-0 (first) message delivered")
+        sent = http_get(base + "/admin/sent").get("messages", [])
+        check(sent and sent[-1]["text"] == "seq0 prompt",
+              "first_last_only: seq-0 message reaches the chat")
+
+        # final message (is_final=true) -> delivered even when seq>0
+        r = plat.call("deliver", {
+            "resource_identifier": "123456789",
+            "content": "final summary",
+            "msg_type": "summary",
+            "thread_sequence": 7,
+            "is_final": True,
+        })
+        res = r.get("result", {})
+        check(res.get("delivered") is True and res.get("external_id"),
+              "first_last_only: final message delivered")
+        sent = http_get(base + "/admin/sent").get("messages", [])
+        check(sent and sent[-1]["text"] == "final summary",
+              "first_last_only: final message reaches the chat")
+
+        # final delivery derives reply_to from cause_external_id when the
+        # core does not carry reply_to_message_id (plugin-agnostic core).
+        r = plat.call("deliver", {
+            "resource_identifier": "123456789",
+            "content": "final with derived reply",
+            "msg_type": "summary",
+            "thread_sequence": 8,
+            "is_final": True,
+            "cause_external_id": "202",
+        })
+        res = r.get("result", {})
+        check(res.get("delivered") is True and res.get("external_id"),
+              "first_last_only: final delivery with cause_external_id delivered")
+        sent = http_get(base + "/admin/sent").get("messages", [])
+        check(sent and sent[-1]["text"] == "final with derived reply"
+              and str(sent[-1].get("reply_to_message_id")) == "202",
+              "final delivery replies to seq-0 via cause_external_id (reply_to=202)")
+
+        # flag off (default): every delivery is sent, including intermediates
+        r = plat.call("configure", {"config": {
+            "bot_token": MOCK_TOKEN,
+            "api_base_url": base,
+            "polling_enabled": False,
+            "poll_interval_secs": 1,
+            "first_last_only": False,
+        }})
+        check(r.get("result", {}).get("configured") is True,
+              "configure(first_last_only=false) -> configured:true")
+        r = plat.call("deliver", {
+            "resource_identifier": "123456789",
+            "content": "intermediate when flag off",
+            "thread_sequence": 5,
+            "is_final": False,
+        })
+        res = r.get("result", {})
+        check(res.get("delivered") is True and res.get("external_id"),
+              "first_last_only=false: intermediate delivery sent (full stream)")
+        sent = http_get(base + "/admin/sent").get("messages", [])
+        check(sent and sent[-1]["text"] == "intermediate when flag off",
+              "first_last_only=false: intermediate message reaches the chat")
+
     finally:
         if plat:
             plat.stop()

@@ -16,11 +16,15 @@ Inbound: when polling_enabled is true a background thread long-polls
 getUpdates (offset-based) and emits `inbound_message` notifications to
 stdout, exactly like the mattermost platform does.
 
-Config flag `first_last_only` (boolean, default false): the omniagent core
-reads this flag from the telegram plugin config and, when true, delivers only
-the FIRST and LAST messages of a thread run to this plugin (intermediate
-thread messages are collapsed). The plugin itself parses and echoes the flag
-so the configure round-trip is complete and testable.
+Config flag `first_last_only` (boolean, default false): telegram-specific
+delivery collapse implemented INSIDE this plugin. When true, the plugin
+delivers only the thread's FIRST message (seq-0, the prompt/cause) and the
+FINAL message of the run; every intermediate delivery is suppressed (the
+message stays persisted in the thread history, only the chat delivery is
+skipped). Core message delivery is plugin-agnostic: it sends the full
+message stream and the platform plugin decides what to send. The plugin
+parses and echoes the flag so the configure round-trip is complete and
+testable.
 
 Mock support: the `api_base_url` config override lets the whole plugin run
 against a mock Telegram Bot API server (see tests/mock_telegram_api.py) -
@@ -188,11 +192,43 @@ class TelegramPlatform:
     def handle_deliver(self, req_id, params):
         resource = params.get("resource_identifier", "")
         content = params.get("content", "")
-        # The core sets reply_to_message_id (a string) on FINAL thread
-        # deliveries: the last message of a thread must be sent as a REPLY to
-        # the thread's seq-0 (first) message, never as a standalone top-level
-        # message. Telegram requires an integer message_id.
+        thread_sequence = params.get("thread_sequence", 0)
+        is_final = params.get("is_final", False)
+        cause_external_id = params.get("cause_external_id") or None
+
+        # Telegram first/last-only collapse (plugin-scoped, driven by the
+        # telegram first_last_only config flag): only the thread's FIRST
+        # message (seq-0, the prompt/cause) and the FINAL message of the run
+        # reach the chat; every intermediate delivery is suppressed. Core
+        # sends the full message stream to every platform; this filtering is
+        # telegram-specific and lives here, never in core.
+        if self.first_last_only:
+            try:
+                seq = int(thread_sequence)
+            except (TypeError, ValueError):
+                seq = 0
+            if seq != 0 and not is_final:
+                log.info(
+                    "first_last_only: suppressing intermediate delivery "
+                    "(seq=%s, is_final=%s) to chat %s",
+                    seq, is_final, resource,
+                )
+                self._respond(req_id, result={
+                    "delivered": False,
+                    "external_id": "",
+                    "suppressed": True,
+                })
+                return
+
+        # The FINAL message of a thread must be sent as a REPLY to the
+        # thread's seq-0 (first) message, never as a standalone top-level
+        # message. The core carries reply_to_message_id for backward
+        # compatibility; when absent, the plugin derives it from
+        # cause_external_id (the seq-0 message's external id) on final
+        # deliveries. Telegram requires an integer message_id.
         reply_to = params.get("reply_to_message_id") or None
+        if reply_to is None and is_final and cause_external_id:
+            reply_to = cause_external_id
         reply_to_int = None
         if reply_to is not None:
             try:
