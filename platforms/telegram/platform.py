@@ -77,6 +77,11 @@ class TelegramPlatform:
         self._stop = threading.Event()
         self._stdout_lock = threading.Lock()
         self._configured = False
+        # Per-message reaction state: (chat_id, message_id) -> ordered list of
+        # emoji this plugin has already set, so a terminal reaction ADDS to
+        # the start reaction instead of replacing it (see handle_react).
+        self._reactions = {}
+        self._max_reactions_tracked = 1000
 
     # ------------------------------------------------------------------
     # stdout helpers (single write per line so polling thread + main
@@ -328,23 +333,47 @@ class TelegramPlatform:
     def handle_react(self, req_id, params):
         resource = params.get("resource_identifier", "")
         external_id = params.get("external_id", "")
-        emoji = params.get("emoji", "")
+        raw = params.get("emoji", "")
         # Map Mattermost-style shortcodes to the unicode emoji the Telegram
-        # Bot API requires; unknown values fall back to the bare name.
-        emoji = SHORTCODE_TO_EMOJI.get(emoji, emoji.strip(":"))
+        # Bot API requires; unknown shortcodes are logged and skipped (never
+        # sent as a garbage glyph that Telegram would reject).
+        emoji = SHORTCODE_TO_EMOJI.get(raw, raw.strip(":"))
+        if raw.startswith(":") and raw.endswith(":") \
+                and raw not in SHORTCODE_TO_EMOJI:
+            log.warning("Unknown reaction shortcode %r - not reacting", raw)
+            self._respond(req_id, result={"reacted": False})
+            return
+        if not emoji:
+            self._respond(req_id, result={"reacted": False})
+            return
+        chat_id = self._chat_id(resource)
+        key = (chat_id, external_id)
+        # setMessageReaction REPLACES the whole reaction set of a message, so
+        # a terminal reaction (e.g. the completion check) must re-send the
+        # start reaction (+1) TOGETHER with the new one - otherwise it would
+        # overwrite the +1. Track the emoji set per message and always send
+        # the accumulated set in a single call.
+        current = self._reactions.get(key, [])
+        updated = current if emoji in current else current + [emoji]
         try:
-            reaction = [{"type": "emoji", "emoji": emoji}] if emoji else []
+            reaction = [{"type": "emoji", "emoji": e} for e in updated]
             self._api_post("setMessageReaction", {
-                "chat_id": self._chat_id(resource),
+                "chat_id": chat_id,
                 "message_id": external_id,
                 "reaction": json.dumps(reaction),
             })
-            self._respond(req_id, result={"reacted": True})
-            log.info("Reacted %s to message %s in chat %s",
-                     emoji, external_id, resource)
         except TelegramApiError as e:
             log.error("react failed: %s", e)
             self._respond(req_id, error={"code": -2, "message": str(e)})
+            return
+        self._reactions[key] = updated
+        if len(self._reactions) > self._max_reactions_tracked:
+            # Bound memory: drop the oldest tracked message (dict keeps
+            # insertion order).
+            self._reactions.pop(next(iter(self._reactions)))
+        self._respond(req_id, result={"reacted": True})
+        log.info("Reacted %s to message %s in chat %s",
+                 updated, external_id, resource)
 
     # ------------------------------------------------------------------
     # Inbound: long-poll getUpdates
@@ -512,6 +541,8 @@ SHORTCODE_TO_EMOJI = {
     ":broken_heart:": "\U0001f494",
     ":o:": "\U0001f17e\ufe0f",
     ":handshake:": "\U0001f91d",
+    ":+1:": "\U0001f44d",
+    ":thumbsup:": "\U0001f44d",
 }
 
 

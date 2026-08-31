@@ -383,10 +383,49 @@ def main():
         reactions = http_get(base + "/admin/reactions").get("reactions", [])
         # json.dumps uses ensure_ascii by default, so the emoji arrives in
         # escaped surrogate form; parse the stored reaction JSON to compare.
+        # handle_react ACCUMULATES: the stored set now holds BOTH the earlier
+        # thumbs-up and the handshake (start reaction is preserved).
         check(
             reactions
-            and json.loads(reactions[-1]["reaction"])[0]["emoji"] == "\U0001f91d",
-            "mock stored mapped unicode handshake for shortcode",
+            and [e["emoji"] for e in json.loads(reactions[-1]["reaction"])]
+            == ["\U0001f44d", "\U0001f91d"],
+            "mock stored accumulated reactions [thumbs_up, handshake]",
+        )
+
+        # 6b2. ":+1:" start-reaction shortcode maps to the unicode thumbs-up,
+        #      and a terminal reaction on the SAME message is sent as the
+        #      combined set (start + terminal) instead of overwriting it.
+        r = plat.call("deliver", {
+            "resource_identifier": "123456789",
+            "content": "React target 2",
+        })
+        ext3 = r.get("result", {}).get("external_id")
+        r = plat.call("react", {
+            "resource_identifier": "123456789",
+            "external_id": ext3,
+            "emoji": ":+1:",
+        })
+        check(r.get("result", {}).get("reacted") is True,
+              "react :+1: shortcode -> reacted:true")
+        reactions = http_get(base + "/admin/reactions").get("reactions", [])
+        check(
+            reactions
+            and json.loads(reactions[-1]["reaction"])[0]["emoji"] == "\U0001f44d",
+            ":+1: shortcode mapped to unicode thumbs-up",
+        )
+        r = plat.call("react", {
+            "resource_identifier": "123456789",
+            "external_id": ext3,
+            "emoji": ":white_check_mark:",
+        })
+        check(r.get("result", {}).get("reacted") is True,
+              "react :white_check_mark: -> reacted:true")
+        reactions = http_get(base + "/admin/reactions").get("reactions", [])
+        check(
+            reactions
+            and [e["emoji"] for e in json.loads(reactions[-1]["reaction"])]
+            == ["\U0001f44d", "\u2705"],
+            "terminal reaction sent as combined set [thumbs_up, check]",
         )
 
         # 6c. typing -> sendChatAction (action=typing)
