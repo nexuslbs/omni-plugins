@@ -793,6 +793,54 @@ def main():
         check(sent and sent[-1]["text"] == "intermediate when flag off",
               "first_last_only=false: intermediate message reaches the chat")
 
+        # 13. missing bot_token (the production inbound-dead failure mode):
+        #     polling enabled but no token -> configure still succeeds for
+        #     OUTBOUND, reports polling_enabled:false + a warning, and does
+        #     NOT start getUpdates polling (injected updates stay queued).
+        plat.stop()
+        plat = PlatformProc()
+        r = plat.call("configure", {"config": {
+            "api_base_url": base,
+            "polling_enabled": True,
+            "poll_interval_secs": 1,
+        }})
+        res = r.get("result", {})
+        check(res.get("configured") is True
+              and res.get("polling_enabled") is False
+              and "warning" in res,
+              "configure(no bot_token) -> configured:true, polling_enabled:false, warning present")
+
+        # deliver without a token must fail cleanly (error response), never
+        # crash the plugin and never silently drop the message.
+        r = plat.call("deliver", {
+            "resource_identifier": "123456789",
+            "content": "deliver without token",
+        })
+        check(r.get("error") is not None,
+              "deliver without bot_token -> clean error response (no crash)")
+
+        # no polling was started: reset the mock, then verify ZERO getUpdates
+        # calls happen while the token-less plugin is up (a polling plugin
+        # would call getUpdates and consume the injected update).
+        http_post(base + "/admin/reset", {})
+        calls_before = http_get(base + "/admin/updates_calls").get("calls", -1)
+        http_post(base + "/admin/inject", {
+            "update_id": 9600,
+            "message": {
+                "message_id": 791,
+                "date": 1700000020,
+                "chat": {"id": 123456, "type": "private"},
+                "from": {"id": 555, "first_name": "Mock"},
+                "text": "should never be polled",
+            },
+        })
+        time.sleep(2.5)
+        calls_after = http_get(base + "/admin/updates_calls").get("calls", -1)
+        updates = http_get(base + "/admin/updates").get("updates", [])
+        check(calls_after == calls_before
+              and any(u.get("update_id") == 9600 for u in updates),
+              "missing bot_token -> zero getUpdates calls, injected update stays queued")
+
     finally:
         if plat:
             plat.stop()

@@ -47,6 +47,7 @@ class MockTelegramState:
         self.updates = {}            # update_id -> update dict (queue)
         self.next_update_id = 1
         self.next_message_id = 1000
+        self.get_updates_calls = 0
         self.token = None            # last-seen token (any non-empty accepted)
 
     # -- outbound message store ----------------------------------------
@@ -196,6 +197,7 @@ class MockHandler(BaseHTTPRequestHandler):
                 "first_name": "MockTelegramBot",
                 "username": "mock_telegram_bot",
             }})
+            self.state.get_updates_calls += 1
         elif method == "getUpdates":
             offset = body.get("offset")
             try:
@@ -274,7 +276,7 @@ class MockHandler(BaseHTTPRequestHandler):
             self._json(200, {"ok": True, "updates": sorted(
                 self.state.updates.values(), key=lambda u: u["update_id"])})
         elif path == "/admin/reset":
-            self.state = MockTelegramState()
+            MockHandler.state = MockTelegramState()
             self._json(200, {"ok": True})
         else:
             self._json(404, {"ok": False, "description": "unknown admin endpoint"})
@@ -290,6 +292,8 @@ class MockHandler(BaseHTTPRequestHandler):
         elif path == "/admin/updates":
             self._json(200, {"ok": True, "updates": sorted(
                 self.state.updates.values(), key=lambda u: u["update_id"])})
+        elif path == "/admin/updates_calls":
+            self._json(200, {"ok": True, "calls": self.state.get_updates_calls})
         elif path == "/health":
             self._json(200, {"ok": True})
         else:

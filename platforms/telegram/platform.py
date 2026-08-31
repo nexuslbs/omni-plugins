@@ -174,6 +174,17 @@ class TelegramPlatform:
         self.parent_by_chat = _as_bool(config.get("parent_by_chat", False))
         self.first_last_only = _as_bool(config.get("first_last_only", False))
         self._configured = True
+        if self.polling_enabled and not self.bot_token:
+            # Loud, never silent: this is the production failure mode where a
+            # restarted/updated plugin has no token -> no getUpdates long-poll
+            # -> inbound messages never reach omniagent and no thread is ever
+            # created. Outbound delivery still works; only inbound is dead.
+            log.error(
+                "bot_token is EMPTY/missing - inbound polling is DISABLED: "
+                "messages sent in the Telegram chat will NOT create threads "
+                "in omniagent. Set bot_token in the telegram plugin config "
+                "(token from @BotFather) and restart the plugin."
+            )
         log.info("Configured: api_base=%s polling=%s interval=%ss "
                  "parent_by_chat=%s first_last_only=%s token_set=%s",
                  self.api_base_url, self.polling_enabled,
@@ -182,12 +193,23 @@ class TelegramPlatform:
 
         if self.polling_enabled and self.bot_token:
             self._start_polling()
+        elif not self.polling_enabled:
+            # A re-configure with polling disabled must STOP a running poll
+            # thread (otherwise getUpdates keeps consuming the user's updates
+            # and the plugin keeps polling after the flag is turned off).
+            self._stop_polling()
 
-        self._respond(req_id, result={
+        response = {
             "configured": True,
             "polling_enabled": self.polling_enabled and bool(self.bot_token),
             "first_last_only": self.first_last_only,
-        })
+        }
+        if self.polling_enabled and not self.bot_token:
+            response["warning"] = (
+                "bot_token is empty - inbound polling disabled; "
+                "set bot_token in the telegram plugin config and restart"
+            )
+        self._respond(req_id, result=response)
 
     def handle_deliver(self, req_id, params):
         resource = params.get("resource_identifier", "")
@@ -203,6 +225,16 @@ class TelegramPlatform:
         # sends the full message stream to every platform; this filtering is
         # telegram-specific and lives here, never in core.
         if self.first_last_only:
+            if "thread_sequence" not in params or "is_final" not in params:
+                # Old core: deliver requests without the delivery metadata
+                # (thread_sequence/is_final) cannot be collapsed - every
+                # message looks like seq-0 and nothing is suppressed. Warn
+                # instead of failing silently (the reported "all messages"
+                # symptom on Telegram).
+                log.warning(
+                    "first_last_only: deliver request lacks thread_sequence/"
+                    "is_final metadata (core too old?) - delivering"
+                )
             try:
                 seq = int(thread_sequence)
             except (TypeError, ValueError):
@@ -414,7 +446,19 @@ class TelegramPlatform:
     # ------------------------------------------------------------------
     # Inbound: long-poll getUpdates
     # ------------------------------------------------------------------
+    def _stop_polling(self):
+        self._stop.set()
+        if self._poll_thread and self._poll_thread.is_alive():
+            self._poll_thread.join(timeout=5)
+        self._poll_thread = None
+
     def _start_polling(self):
+        if not self.bot_token:
+            log.error(
+                "Cannot start inbound polling: bot_token is empty. "
+                "Set bot_token in the telegram plugin config and restart."
+            )
+            return
         if self._poll_thread and self._poll_thread.is_alive():
             return
         self._stop.clear()
