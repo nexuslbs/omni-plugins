@@ -1,0 +1,7 @@
+{
+  "name": "redaction",
+  "version": "0.1.0",
+  "type": "mcp",
+  "description": "Redact possible secrets (API keys, tokens, connection strings, private keys) from text before delivery. Replaces the secret-redaction logic that used to live in omniagent core.",
+  "config_schema": []
+}
