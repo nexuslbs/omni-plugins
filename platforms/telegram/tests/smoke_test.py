@@ -428,6 +428,74 @@ def main():
             "terminal reaction sent as combined set [thumbs_up, check]",
         )
 
+        # 6b3. every terminal status shortcode the core sends maps to a valid
+        #      unicode emoji; each is reacted on a FRESH message and the stored
+        #      reaction JSON carries the mapped glyph.
+        status_codes = [
+            (":white_check_mark:", "\u2705"),
+            (":x:", "\u274c"),
+            (":broken_heart:", "\U0001f494"),
+            (":o:", "\U0001f17e\ufe0f"),
+            (":handshake:", "\U0001f91d"),
+        ]
+        for shortcode, expected in status_codes:
+            r = plat.call("deliver", {
+                "resource_identifier": "123456789",
+                "content": "Status react " + shortcode,
+            })
+            ext_s = r.get("result", {}).get("external_id")
+            r = plat.call("react", {
+                "resource_identifier": "123456789",
+                "external_id": ext_s,
+                "emoji": shortcode,
+            })
+            check(r.get("result", {}).get("reacted") is True,
+                  "react " + shortcode + " -> reacted:true")
+            reactions = http_get(base + "/admin/reactions").get("reactions", [])
+            check(
+                reactions
+                and json.loads(reactions[-1]["reaction"])[-1]["emoji"] == expected,
+                shortcode + " mapped to " + expected + " in setMessageReaction",
+            )
+
+        # 6b4. ":thumbsup:" and ":thumbs_up:" aliases map to the same thumbs-up
+        #      glyph as ":+1:".
+        for alias in (":thumbsup:", ":thumbs_up:"):
+            r = plat.call("deliver", {
+                "resource_identifier": "123456789",
+                "content": "Alias react " + alias,
+            })
+            ext_a = r.get("result", {}).get("external_id")
+            r = plat.call("react", {
+                "resource_identifier": "123456789",
+                "external_id": ext_a,
+                "emoji": alias,
+            })
+            check(r.get("result", {}).get("reacted") is True,
+                  "react " + alias + " -> reacted:true")
+            reactions = http_get(base + "/admin/reactions").get("reactions", [])
+            check(
+                reactions
+                and json.loads(reactions[-1]["reaction"])[-1]["emoji"]
+                == "\U0001f44d",
+                alias + " mapped to thumbs-up",
+            )
+
+        # 6b5. unknown shortcode -> reacted:false and NO setMessageReaction
+        #      call: an invalid emoji string must never reach the API.
+        before = len(http_get(base + "/admin/reactions").get("reactions", []))
+        r = plat.call("react", {
+            "resource_identifier": "123456789",
+            "external_id": ext3,
+            "emoji": ":not_a_real_emoji:",
+        })
+        check(r.get("result", {}).get("reacted") is False,
+              "react unknown shortcode -> reacted:false")
+        after = len(http_get(base + "/admin/reactions").get("reactions", []))
+        check(after == before,
+              "unknown shortcode -> no setMessageReaction call "
+              "(no invalid emoji sent)")
+
         # 6c. typing -> sendChatAction (action=typing)
         r = plat.call("typing", {"resource_identifier": "123456789"})
         check(r.get("result", {}).get("typing") is True,

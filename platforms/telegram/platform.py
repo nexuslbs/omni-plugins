@@ -543,6 +543,7 @@ SHORTCODE_TO_EMOJI = {
     ":handshake:": "\U0001f91d",
     ":+1:": "\U0001f44d",
     ":thumbsup:": "\U0001f44d",
+    ":thumbs_up:": "\U0001f44d",
 }
 
 
