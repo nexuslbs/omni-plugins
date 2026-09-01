@@ -117,7 +117,7 @@ def handle_initialize(req_id):
 def handle_tools_list(req_id):
     tools = [
         {
-            "name": "redaction_redact",
+            "name": "redact",
             "description": "[redaction] Replace possible secrets (API keys, JWT tokens, connection strings, private keys, Slack tokens, long base64) in the input text with a redaction mask. Returns the redacted string.",
             "inputSchema": {
                 "type": "object",
@@ -223,7 +223,7 @@ def main():
                 tool_name = params.get("name", "")
                 arguments = params.get("arguments", {})
 
-                if tool_name == "redaction_redact":
+                if tool_name == "redact":
                     handle_redact(req_id, arguments)
                 else:
                     if req_id is not None:
