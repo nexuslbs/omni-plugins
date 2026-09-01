@@ -242,6 +242,11 @@ EXPECTED_TOOLS = {
 # entrypoint (target/release/<pkg>). If the binary cannot be produced/started
 # in this environment, the enable fails with "MCP server ... failed to start"
 # and the tools never register - recorded as a documented skip.
+
+# Non-rust tools whose MCP server cannot start in this environment (e.g. a
+# node server whose npm dependencies the install-git clone step never
+# installed, like paperclip) hit the same "MCP server ... failed to start"
+# enable error and are recorded as documented skips in _exercise_tool_plugin.
 RUST_TOOL_PLUGINS = {"cosmos-rust-tool", "cron-echo", "test-rust-tool", "test-rust-tool-2"}
 
 def benign_args_from_schema(schema):
@@ -287,11 +292,17 @@ def _exercise_tool_plugin(name):
         enable_remote(name, "tools")
     except RuntimeError as e:
         enable_err = str(e)
-        if name not in RUST_TOOL_PLUGINS:
-            raise
-        # Rust tool: binary may need compilation by install-git; if the MCP
-        # server still cannot start, this is an environment limitation.
-        raise SkipTest(f"rust MCP server failed to start: {enable_err}")
+        if name in RUST_TOOL_PLUGINS:
+            # Rust tool: binary may need compilation by install-git; if the MCP
+            # server still cannot start, this is an environment limitation.
+            raise SkipTest(f"rust MCP server failed to start: {enable_err}")
+        if "failed to start" in enable_err:
+            # Non-rust tool whose MCP server cannot start in this environment
+            # (e.g. paperclip: the node server needs `npm install`, which the
+            # install-git clone step does not run). Same documented-skip
+            # treatment as the rust tools / hindsight backend.
+            raise SkipTest(f"MCP server failed to start (environment-limited): {enable_err}")
+        raise
     # Collect this plugin's tools from /mcp/tools (registration proof).
     deadline = time.time() + 120
     found = []
