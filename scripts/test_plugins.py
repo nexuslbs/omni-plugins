@@ -39,7 +39,7 @@ import socket
 
 BASE = "http://localhost:8080"
 REMOTE_REPO = "/opt/workspace/omni-plugins"
-DATA_DIR = "/opt/omni"
+DATA_DIR = os.environ.get("OMNI_DIR")
 
 tests_run = 0
 tests_pass = 0
