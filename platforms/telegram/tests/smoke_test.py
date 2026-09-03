@@ -793,6 +793,72 @@ def main():
         check(sent and sent[-1]["text"] == "intermediate when flag off",
               "first_last_only=false: intermediate message reaches the chat")
 
+        # 12b. Telegram 4096-char limit: a FINAL message longer than the API
+        #      limit must still be delivered. Regression: completed thread
+        #      792's final answer (~4.7k chars) was silently dropped -
+        #      sendMessage rejected it with "message is too long" and core
+        #      never stored an external_id. The plugin must split the content
+        #      into multiple sendMessage calls (each <= 4096 chars): the first
+        #      part replies to seq-0, later parts are standalone follow-ups.
+        r = plat.call("configure", {"config": {
+            "bot_token": MOCK_TOKEN,
+            "api_base_url": base,
+            "polling_enabled": False,
+            "poll_interval_secs": 1,
+            "first_last_only": True,
+        }})
+        check(r.get("result", {}).get("configured") is True,
+              "length regression: configure(first_last_only=true)")
+        long_content = "\n\n".join(
+            "## Section {n}\n\nParagraph {n} with **bold**, *italic*, `code` "
+            "and a [link](https://example.com) plus padding text. {pad}"
+            .format(n=i, pad="word " * 25)
+            for i in range(32)
+        )
+        check(len(long_content) > 4096,
+              "length regression: final content exceeds 4096 chars "
+              "(len={})".format(len(long_content)))
+        sent_before = len(http_get(base + "/admin/sent").get("messages", []))
+        r = plat.call("deliver", {
+            "resource_identifier": "123456789",
+            "content": long_content,
+            "msg_type": "summary",
+            "thread_sequence": 9,
+            "is_final": True,
+            "cause_external_id": "202",
+        })
+        res = r.get("result", {})
+        check(res.get("delivered") is True and res.get("external_id"),
+              "length regression: >4096-char FINAL message delivered "
+              "(external_id set)")
+        sent = http_get(base + "/admin/sent").get("messages", [])
+        new_sent = sent[sent_before:]
+        check(len(new_sent) > 1,
+              "length regression: content split into {} sendMessage calls"
+              .format(len(new_sent)))
+        check(all(len(m.get("text", "")) <= 4096 for m in new_sent),
+              "length regression: every sent part <= 4096 chars")
+        check(len(new_sent) > 0
+              and str(new_sent[0].get("reply_to_message_id")) == "202",
+              "length regression: first part replies to seq-0 (reply_to=202)")
+        check(all("reply_to_message_id" not in m for m in new_sent[1:]),
+              "length regression: follow-up parts standalone (no reply_to)")
+        received = "".join(m.get("text", "") for m in new_sent)
+        check(len(received) >= len(long_content),
+              "length regression: full content reached the chat (no drop)")
+        # intermediate messages stay suppressed while the flag is on
+        r = plat.call("deliver", {
+            "resource_identifier": "123456789",
+            "content": "tool record",
+            "msg_type": "tool",
+            "thread_sequence": 6,
+            "is_final": False,
+        })
+        res = r.get("result", {})
+        check(res.get("delivered") is False and res.get("suppressed") is True,
+              "length regression: intermediate still suppressed "
+              "(first/last collapse intact)")
+
         # 13. missing bot_token (the production inbound-dead failure mode):
         #     polling enabled but no token -> configure still succeeds for
         #     OUTBOUND, reports polling_enabled:false + a warning, and does

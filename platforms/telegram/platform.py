@@ -52,6 +52,8 @@ log = logging.getLogger("telegram-platform")
 
 DEFAULT_API_BASE = "https://api.telegram.org"
 POLL_LONGPOLL_SECS = 30  # Telegram getUpdates long-poll upper bound
+TG_MSG_LIMIT = 4096    # sendMessage hard limit: 1-4096 chars after parsing
+TG_MSG_BUDGET = 3800   # raw markdown budget per chunk (HTML rendering inflates)
 
 
 def _as_bool(value, default=False):
@@ -270,34 +272,35 @@ class TelegramPlatform:
                     "deliver: invalid reply_to_message_id %r - sending standalone",
                     reply_to,
                 )
+        parts = chunk_telegram_text(content)
+
         try:
-            result = self._send_rendered(resource, content, reply_to_int)
-            external_id = str(result.get("message_id", ""))
+            external_id = self._deliver_parts(resource, parts, reply_to_int)
             self._respond(req_id, result={
                 "delivered": True,
                 "external_id": external_id,
             })
-            log.info("Delivered message %s to chat %s (reply_to=%s)",
-                     external_id, resource, reply_to_int)
+            log.info("Delivered message %s to chat %s (reply_to=%s, parts=%d)",
+                     external_id, resource, reply_to_int, len(parts))
         except TelegramApiError as e:
             if reply_to_int is not None:
                 # The seq-0 message may have been deleted or the id may be
-                # stale (legacy thread): fall back to the current standalone
-                # send and log it - the message is never dropped.
+                # stale (legacy thread): fall back to standalone sends (no
+                # reply) and log it - the message is never dropped.
                 log.warning(
                     "deliver reply to %s failed (%s) - retrying standalone",
                     reply_to_int, e,
                 )
                 try:
-                    result = self._send_rendered(resource, content, None)
-                    external_id = str(result.get("message_id", ""))
+                    external_id = self._deliver_parts(resource, parts, None)
                     self._respond(req_id, result={
                         "delivered": True,
                         "external_id": external_id,
                     })
                     log.info(
-                        "Delivered message %s to chat %s (standalone fallback)",
-                        external_id, resource,
+                        "Delivered message %s to chat %s (standalone fallback, "
+                        "parts=%d)",
+                        external_id, resource, len(parts),
                     )
                     return
                 except TelegramApiError as e2:
@@ -306,6 +309,23 @@ class TelegramPlatform:
                     return
             log.error("deliver failed: %s", e)
             self._respond(req_id, error={"code": -2, "message": str(e)})
+
+    def _deliver_parts(self, resource, parts, reply_to_int):
+        """Send every part of a delivery to the chat.
+
+        Content is pre-split into Telegram-sized parts (<= 4096 chars each,
+        see chunk_telegram_text). The FIRST part carries the reply target
+        (the thread's seq-0 message for final deliveries); each later part is
+        a standalone follow-up message, because Telegram has no multi-part
+        message container. Returns the external message id of the LAST part,
+        which is the id core records on the message row.
+        """
+        external_id = ""
+        for i, part in enumerate(parts):
+            reply = reply_to_int if i == 0 else None
+            result = self._send_rendered(resource, part, reply)
+            external_id = str(result.get("message_id", ""))
+        return external_id
 
     def _send_rendered(self, resource, content, reply_to_int):
         """sendMessage with the content rendered from markdown to Telegram HTML.
@@ -776,6 +796,122 @@ def strip_markdown(text):
         s = s.replace("**", "").replace("__", "").replace("`", "")
         lines.append(s)
     return "\n".join(lines)
+
+
+def _split_part(part_text, budget):
+    """Split part_text (longer than budget) into pieces each <= budget chars.
+
+    Iterative (never recursive, so no stack-depth risk on huge inputs). Cuts
+    fall on line boundaries, so concatenating the returned pieces reproduces
+    part_text exactly whenever no fence markers had to be inserted. Fenced
+    code blocks are kept balanced inside each piece: when a cut lands inside
+    an open fence, the piece is closed with a ``` marker and the next piece
+    is re-opened with one. A single line longer than the budget is hard-split
+    by characters (its text is never dropped).
+    """
+    if len(part_text) <= budget:
+        return [part_text]
+    lines = part_text.split("\n")
+    out = []
+    buf = []
+    buf_chars = 0
+    fence_open = False  # inside a fenced block?
+    n = len(lines)
+
+    def flush(with_close, trailing_newline):
+        nonlocal buf, buf_chars
+        if not buf:
+            return
+        piece = "\n".join(buf)
+        if with_close:
+            piece += "\n```"
+        elif trailing_newline:
+            piece += "\n"
+        out.append(piece)
+        buf = []
+        buf_chars = 0
+
+    for idx, line in enumerate(lines):
+        is_marker = bool(_FENCE_RE.match(line.strip()))
+        more_lines = idx < n - 1
+        if is_marker:
+            if buf and buf_chars + len(line) + 1 > budget and not fence_open:
+                flush(False, more_lines)
+            buf.append(line)
+            buf_chars += len(line) + 1
+            fence_open = not fence_open
+            continue
+        # non-marker content line
+        if buf and buf_chars + len(line) + 1 > budget:
+            if fence_open:
+                flush(True, False)   # close the fence on the current piece
+                buf = ["```"]        # and reopen on the next one
+                buf_chars = 4
+            else:
+                flush(False, True)
+        if line == "":
+            # Blank separator line: keep it, it is the paragraph spacing.
+            buf.append("")
+            buf_chars += 1
+            continue
+        # a line longer than the whole budget is hard-split by characters
+        while buf_chars + len(line) + 1 > budget:
+            room = budget - buf_chars
+            if room < 1:
+                if fence_open:
+                    flush(True, False)
+                    buf = ["```"]
+                    buf_chars = 4
+                else:
+                    flush(False, True)
+                continue
+            take, line = line[:room], line[room:]
+            if take:
+                buf.append(take)
+                buf_chars += len(take) + 1
+            if buf_chars >= budget:
+                if fence_open:
+                    flush(True, False)
+                    buf = ["```"]
+                    buf_chars = 4
+                else:
+                    flush(False, True)
+        if line:
+            buf.append(line)
+            buf_chars += len(line) + 1
+    flush(False, False)
+    return out
+
+
+def chunk_telegram_text(text):
+    """Split content into parts whose RENDERED HTML never exceeds Telegram's
+    4096-character sendMessage limit.
+
+    Short content is returned unchanged as one part. Long content is split at
+    line boundaries (fenced code blocks stay whole whenever possible) so that
+    every part, once converted by markdown_to_html, fits the limit. The parts
+    concatenate back to the original text exactly, except for an oversized
+    fenced block which is emitted as several complete fenced blocks. This is
+    the guarantee that a finished thread's final message is never silently
+    dropped by a sendMessage "message is too long" rejection.
+    """
+    if len(markdown_to_html(text)) <= TG_MSG_LIMIT:
+        return [text]
+    parts = _split_part(text, TG_MSG_BUDGET)
+    for _ in range(32):
+        oversize = [p for p in parts
+                    if len(markdown_to_html(p)) > TG_MSG_LIMIT]
+        if not oversize:
+            return parts
+        budget = max(300, int(TG_MSG_BUDGET * 0.7))
+        new_parts = []
+        for p in parts:
+            if len(markdown_to_html(p)) <= TG_MSG_LIMIT:
+                new_parts.append(p)
+            else:
+                new_parts.extend(_split_part(p, budget))
+        parts = new_parts
+    return parts
 
 
 def _is_parse_error(err):

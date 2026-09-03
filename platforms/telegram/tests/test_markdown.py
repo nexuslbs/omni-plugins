@@ -14,7 +14,8 @@ import sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(HERE))
 
-from platform import markdown_to_html, strip_markdown  # noqa: E402
+from platform import (chunk_telegram_text, markdown_to_html,  # noqa: E402
+                      strip_markdown)
 
 FAILURES = []
 
@@ -104,6 +105,40 @@ check(strip_markdown("- item") == "\u2022 item", "strip: list marker -> bullet")
 check(strip_markdown("```\ncode\n```") == "code", "strip: fence lines dropped")
 check(strip_markdown("[t](https://x.com)") == "t (https://x.com)",
       "strip: link -> label (url)")
+
+# -- chunk_telegram_text (Telegram 4096-char sendMessage limit) ----------
+_ch_short = chunk_telegram_text("short **message**")
+check(len(_ch_short) == 1 and _ch_short[0] == "short **message**",
+      "chunk: short content stays a single part")
+_long_text = "\n\n".join(
+    "Paragraph {} with **bold** and `code` and a [link](https://x.com). {}"
+    .format(i, "word " * 60) for i in range(40))
+_ch_parts = chunk_telegram_text(_long_text)
+check(len(_ch_parts) > 1,
+      "chunk: 4k+ content splits into {} parts".format(len(_ch_parts)))
+check(all(len(markdown_to_html(p)) <= 4096 for p in _ch_parts),
+      "chunk: every rendered part <= 4096 chars")
+check(all(len(p) <= 4096 for p in _ch_parts),
+      "chunk: every raw part <= 4096 chars")
+check("".join(_ch_parts) == _long_text,
+      "chunk: parts concatenate to the original (no text lost)")
+_fence_lines = 350
+_fence_text = ("# Head\n\n```python\n"
+               + "value = 1  # pad line\n" * _fence_lines
+               + "```\n\nafter fence text")
+_fence_parts = chunk_telegram_text(_fence_text)
+check(all(len(markdown_to_html(p)) <= 4096 for p in _fence_parts),
+      "chunk: oversized fenced block splits into parts that all fit")
+check("```" not in "".join(markdown_to_html(p) for p in _fence_parts),
+      "chunk: no raw fence markers leak into rendered parts")
+check(strip_markdown("\n".join(_fence_parts)).count("value = 1  # pad line")
+      == _fence_lines,
+      "chunk: fenced code content fully preserved across parts")
+check(strip_markdown("\n".join(_fence_parts)).endswith("after fence text"),
+      "chunk: text after the fence survives chunking")
+_render_over = chunk_telegram_text("**" + ("x" * 9000) + "**")
+check(all(len(markdown_to_html(p)) <= 4096 for p in _render_over),
+      "chunk: inline-heavy content (9000 bold chars) still fits the limit")
 
 print("")
 if FAILURES:

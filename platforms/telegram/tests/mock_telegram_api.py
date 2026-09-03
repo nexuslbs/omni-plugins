@@ -221,6 +221,14 @@ class MockHandler(BaseHTTPRequestHandler):
                 self._json(400, {"ok": False,
                                  "description": "can't parse entities: mock rejection"})
                 return
+            # Telegram's real limit: sendMessage text is 1-4096 characters
+            # after entities parsing. Enforce it so an over-long delivery is
+            # rejected exactly like the real Bot API (regression: completed
+            # thread 792's final answer was silently dropped this way).
+            if len(text) > 4096:
+                self._json(400, {"ok": False,
+                                 "description": "message is too long"})
+                return
             extra = {"chat": {"id": chat_id, "type": "private"}}
             if "reply_to_message_id" in body:
                 extra["reply_to_message_id"] = body.get("reply_to_message_id")
