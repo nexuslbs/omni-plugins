@@ -54,6 +54,13 @@ providers:
     refresh_url: "https://opencode.ai/zen/go/v1/models"
     default_model: "deepseek-v4-flash"
     api_key: "$secret:OPENCODE_API_KEY"
+    # Custom request headers (typed values, resolved by core at request time):
+    # x-opencode-session carries the current channel name so OpenCode Go can
+    # attribute and optimize traffic per session. The core client always sends
+    # a User-Agent identifying omniagent on top of this.
+    headers:
+      x-opencode-session:
+        type: channel
     models: ["deepseek-v4-flash"]
 
   # Test provider - built-in fake responses without HTTP calls or API keys.
