@@ -372,7 +372,10 @@ def main():
         check(reactions and str(reactions[-1]["message_id"]) == str(ext2),
               "mock stored setMessageReaction")
 
-        # 6b. shortcode mapping: ":handshake:" -> the unicode handshake emoji
+        # 6b. shortcode mapping: ":handshake:" -> the unicode handshake emoji.
+        #     The handshake is reacted on the SAME message that already holds
+        #     the thumbs-up, and it must REPLACE it (override): the stored set
+        #     has exactly one emoji and it is the handshake, never both.
         r = plat.call("react", {
             "resource_identifier": "123456789",
             "external_id": ext2,
@@ -383,18 +386,19 @@ def main():
         reactions = http_get(base + "/admin/reactions").get("reactions", [])
         # json.dumps uses ensure_ascii by default, so the emoji arrives in
         # escaped surrogate form; parse the stored reaction JSON to compare.
-        # handle_react ACCUMULATES: the stored set now holds BOTH the earlier
-        # thumbs-up and the handshake (start reaction is preserved).
         check(
             reactions
             and [e["emoji"] for e in json.loads(reactions[-1]["reaction"])]
-            == ["\U0001f44d", "\U0001f91d"],
-            "mock stored accumulated reactions [thumbs_up, handshake]",
+            == ["\U0001f91d"],
+            "terminal reaction REPLACES start reaction on the same message "
+            "(stored set = [handshake] only)",
         )
 
-        # 6b2. ":+1:" start-reaction shortcode maps to the unicode thumbs-up,
-        #      and a terminal reaction on the SAME message is sent as the
-        #      combined set (start + terminal) instead of overwriting it.
+        # 6b2. FULL LIFECYCLE override: ":+1:" (processing) maps to the
+        #      unicode thumbs-up; a terminal reaction on the SAME message
+        #      (":white_check_mark:" completed / ":broken_heart:" interrupted)
+        #      REPLACES it - the old +1 must be GONE and the stored set must
+        #      hold ONLY the terminal emoji (never accumulated).
         r = plat.call("deliver", {
             "resource_identifier": "123456789",
             "content": "React target 2",
@@ -413,6 +417,7 @@ def main():
             and json.loads(reactions[-1]["reaction"])[0]["emoji"] == "\U0001f44d",
             ":+1: shortcode mapped to unicode thumbs-up",
         )
+        # completed -> the same message now shows ONLY the check mark
         r = plat.call("react", {
             "resource_identifier": "123456789",
             "external_id": ext3,
@@ -424,8 +429,25 @@ def main():
         check(
             reactions
             and [e["emoji"] for e in json.loads(reactions[-1]["reaction"])]
-            == ["\U0001f44d", "\u2705"],
-            "terminal reaction sent as combined set [thumbs_up, check]",
+            == ["\u2705"],
+            "completed: +1 REPLACED by check mark on the same message "
+            "(stored set = [check] only, no thumbs_up)",
+        )
+        # interrupted -> a broken heart replaces the check mark
+        r = plat.call("react", {
+            "resource_identifier": "123456789",
+            "external_id": ext3,
+            "emoji": ":broken_heart:",
+        })
+        check(r.get("result", {}).get("reacted") is True,
+              "react :broken_heart: -> reacted:true")
+        reactions = http_get(base + "/admin/reactions").get("reactions", [])
+        check(
+            reactions
+            and [e["emoji"] for e in json.loads(reactions[-1]["reaction"])]
+            == ["\U0001f494"],
+            "interrupted: prior reaction REPLACED by broken heart "
+            "(stored set = [broken_heart] only)",
         )
 
         # 6b3. every terminal status shortcode the core sends maps to a valid

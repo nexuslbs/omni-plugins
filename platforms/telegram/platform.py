@@ -83,11 +83,6 @@ class TelegramPlatform:
         self._stop = threading.Event()
         self._stdout_lock = threading.Lock()
         self._configured = False
-        # Per-message reaction state: (chat_id, message_id) -> ordered list of
-        # emoji this plugin has already set, so a terminal reaction ADDS to
-        # the start reaction instead of replacing it (see handle_react).
-        self._reactions = {}
-        self._max_reactions_tracked = 1000
 
     # ------------------------------------------------------------------
     # stdout helpers (single write per line so polling thread + main
@@ -435,16 +430,16 @@ class TelegramPlatform:
             self._respond(req_id, result={"reacted": False})
             return
         chat_id = self._chat_id(resource)
-        key = (chat_id, external_id)
-        # setMessageReaction REPLACES the whole reaction set of a message, so
-        # a terminal reaction (e.g. the completion check) must re-send the
-        # start reaction (+1) TOGETHER with the new one - otherwise it would
-        # overwrite the +1. Track the emoji set per message and always send
-        # the accumulated set in a single call.
-        current = self._reactions.get(key, [])
-        updated = current if emoji in current else current + [emoji]
+        # OVERRIDE semantics (2026-09-04): a status transition REPLACES the
+        # bot's previous reaction on the SAME message instead of accumulating
+        # a second one. A bot has ONE reaction per message in Telegram and
+        # setMessageReaction replaces the whole reaction set, so sending the
+        # single new emoji IS the override: the initial +1 (processing) is
+        # replaced by the terminal emoji (e.g. the check mark) when the
+        # thread finishes. This supersedes the earlier accumulate behavior
+        # (commit 866b1d6) which kept the +1 forever.
         try:
-            reaction = [{"type": "emoji", "emoji": e} for e in updated]
+            reaction = [{"type": "emoji", "emoji": emoji}]
             self._api_post("setMessageReaction", {
                 "chat_id": chat_id,
                 "message_id": external_id,
@@ -454,14 +449,9 @@ class TelegramPlatform:
             log.error("react failed: %s", e)
             self._respond(req_id, error={"code": -2, "message": str(e)})
             return
-        self._reactions[key] = updated
-        if len(self._reactions) > self._max_reactions_tracked:
-            # Bound memory: drop the oldest tracked message (dict keeps
-            # insertion order).
-            self._reactions.pop(next(iter(self._reactions)))
         self._respond(req_id, result={"reacted": True})
-        log.info("Reacted %s to message %s in chat %s",
-                 updated, external_id, resource)
+        log.info("Reacted %s to message %s in chat %s (replaced prior "
+                 "reaction)", emoji, external_id, resource)
 
     # ------------------------------------------------------------------
     # Inbound: long-poll getUpdates
