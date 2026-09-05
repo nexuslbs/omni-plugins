@@ -525,7 +525,7 @@ class TelegramPlatform:
         chat_id = chat.get("id")
         if chat_id is None:
             return
-        text = msg.get("text") or msg.get("caption") or ""
+        text = _inbound_text(msg)
         external_id = str(msg.get("message_id", ""))
         metadata = {
             "chat_id": chat_id,
@@ -563,7 +563,7 @@ class TelegramPlatform:
         chat_id = chat.get("id")
         if chat_id is None:
             return
-        text = msg.get("text") or msg.get("caption") or ""
+        text = _inbound_text(msg)
         external_id = str(msg.get("message_id", ""))
         self._write_json({
             "method": "message_edited",
@@ -635,6 +635,106 @@ SHORTCODE_TO_EMOJI = {
     ":thumbsup:": "\U0001f44d",
     ":thumbs_up:": "\U0001f44d",
 }
+
+
+# ----------------------------------------------------------------------
+# Inbound: Telegram entities -> markdown (quote/citation preservation)
+# ----------------------------------------------------------------------
+# Telegram delivers a reply-with-quote/citation as PLAIN text whose
+# quoted span is marked by a 'blockquote' message entity (offset/length
+# in UTF-16 code units, the Telegram Bot API unit). Without conversion
+# the citation structure is lost: the plugin forwarded only the raw text
+# and core stored it with no '>' markers, unlike Mattermost where quoted
+# text arrives as literal markdown '> ' lines. The outbound path maps
+# markdown '> ' lines to <blockquote> HTML, so this inbound conversion
+# is its exact inverse: every line covered by a blockquote entity is
+# prefixed with '> '. Only blockquote spans are converted (quote/
+# citation preservation is the scope); all other text is preserved
+# byte-for-byte.
+
+
+def _inbound_text(msg):
+    """Inbound message text with blockquote entities rendered as markdown.
+
+    Selects the text the same way the pre-fix code did (text first,
+    caption fallback) and pairs it with the matching entity list
+    (entities vs caption_entities). Returns "" when neither is present.
+    """
+    text = msg.get("text")
+    entities = msg.get("entities")
+    if not text:
+        text = msg.get("caption") or ""
+        entities = msg.get("caption_entities")
+    if not text:
+        return ""
+    return apply_blockquote_entities(text, entities or [])
+
+
+def apply_blockquote_entities(text, entities):
+    """Prefix every line covered by a Telegram blockquote entity with '> '.
+
+    entities: iterable of Telegram MessageEntity dicts; only entries with
+    type == "blockquote" are used. offset/length are UTF-16 code units.
+    Multi-line spans (offset/length crossing newlines) quote every covered
+    line. Non-quoted text is preserved byte-for-byte.
+    """
+    if not text:
+        return text
+    spans = []
+    for ent in entities or []:
+        if ent.get("type") != "blockquote":
+            continue
+        try:
+            offset = int(ent.get("offset", 0))
+            length = int(ent.get("length", 0))
+        except (TypeError, ValueError):
+            continue
+        start = _utf16_to_char_index(text, offset)
+        end = _utf16_to_char_index(text, offset + length)
+        if end > start:
+            spans.append((start, end))
+    if not spans:
+        return text
+    # Apply back-to-front so earlier entity offsets stay valid after the
+    # inserted markers shift the string.
+    for start, end in sorted(spans, key=lambda s: s[0], reverse=True):
+        text = _prefix_quote_lines(text, start, end)
+    return text
+
+
+def _utf16_to_char_index(text, utf16_pos):
+    """Map a Telegram entity offset (UTF-16 code units) to a python char
+    index (Telegram counts astral chars such as emoji as 2 units)."""
+    units = 0
+    for i, ch in enumerate(text):
+        if units >= utf16_pos:
+            return i
+        units += 2 if ord(ch) > 0xFFFF else 1
+    return len(text)
+
+
+def _prefix_quote_lines(text, start, end):
+    """Prefix '> ' on every line of text falling inside [start, end)."""
+    out = []
+    line_start = 0
+    total = len(text)
+    while True:
+        nl = text.find("\n", line_start)
+        line_end = total if nl == -1 else nl
+        if line_end == line_start:
+            # Empty line (blank line inside a multi-line quote): quoted
+            # when the span strictly crosses it.
+            quoted = start < line_start < end
+        else:
+            quoted = line_start < end and line_end > start
+        if quoted:
+            out.append("> ")
+        out.append(text[line_start:line_end])
+        if nl == -1:
+            break
+        out.append("\n")
+        line_start = nl + 1
+    return "".join(out)
 
 
 # ----------------------------------------------------------------------
