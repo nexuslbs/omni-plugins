@@ -632,7 +632,7 @@ def build_prior_attempts_block(cursor, thread_id):
 # ---------------------------------------------------------------------------
 
 LEARNED_KNOWLEDGE_MAX_ENTRY_CHARS = 600
-LEARNED_KNOWLEDGE_MAX_TOTAL_CHARS = 3000
+LEARNED_KNOWLEDGE_MAX_TOTAL_CHARS = 2000
 
 
 def strip_frontmatter(content):
@@ -668,17 +668,22 @@ def load_promoted_memories(data_dir, profile_name):
 
 
 def render_learned_knowledge_block(memories):
-    header = ("=== Learned Knowledge (promoted memories from prior threads - READ before acting; "
-              "these are validated facts, do not re-derive them) ===")
+    # Bodies live in wiki Memory/Promoted pages and already start with their
+    # own "# Memory: <title>" heading, so the "- **<title>**:" bullet would
+    # only duplicate the title.
+    header = "=== Learned Knowledge (validated memories promoted from prior threads) ==="
     parts = [header]
     total = 0
     for m in memories:
-        entry = f"- **{m['title']}**: {m['body']}"
+        if m["body"].startswith("# Memory: " + m["title"]):
+            entry = m["body"]
+        else:
+            entry = f"- **{m['title']}**: {m['body']}"
         if total + len(entry) > LEARNED_KNOWLEDGE_MAX_TOTAL_CHARS and total > 0:
             break
         total += len(entry)
         parts.append(entry)
-    return "\n".join(parts)
+    return "\n\n".join(parts)
 
 
 def build_learned_knowledge_block(data_dir, profile_name):
@@ -1136,7 +1141,7 @@ def handle_generate(req_id, arguments, meta):
                 tid = int(thread_id)
                 msgs = get_thread_messages(cursor, tid, 10)
                 if msgs:
-                    formatted = [f"[{m[2]}]: {truncate_str(m[3], 500)}" for m in msgs]
+                    formatted = [f"[{m[2]}]: {truncate_str(m[3], 400)}" for m in msgs]
                     context_blocks.append(
                         "Recent conversation history (current thread):\n" + "\n".join(formatted)
                     )
@@ -1150,7 +1155,7 @@ def handle_generate(req_id, arguments, meta):
                 if summary:
                     context_blocks.append(
                         f"Previous channel summary (covers threads up to id={summary[2]}):\n"
-                        f"{truncate_str(summary[3], 4000)}"
+                        f"{truncate_str(summary[3], 3000)}"
                     )
                     threads = get_threads_since(cursor, str(channel_id), summary[2], 5)
                     if threads:
@@ -1167,8 +1172,6 @@ def handle_generate(req_id, arguments, meta):
             context_blocks.append(
                 "Available skills (read one with view_skill before acting when it matches the task):\n"
                 + "\n".join(skills)
-                + "\n\nAfter solving a non-trivial, repeatable task (3+ tool calls, reusable "
-                  "procedure), create a skill with create_skill so future threads reuse it."
             )
 
         # 2c-ext2. Previous attempts of the SAME task (R8-J)
