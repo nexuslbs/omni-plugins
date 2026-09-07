@@ -49,6 +49,8 @@ class MockTelegramState:
         self.next_message_id = 1000
         self.get_updates_calls = 0
         self.token = None            # last-seen token (any non-empty accepted)
+        self.bot_fail = False      # when True every /bot<token>/* POST returns HTTP 500
+        self.bot_delay = 0.0      # seconds each sendMessage sleeps (slow-API simulation)
 
     # -- outbound message store ----------------------------------------
     def record_sent(self, chat_id, text, extra=None):
@@ -190,6 +192,10 @@ class MockHandler(BaseHTTPRequestHandler):
             return
         self.state.token = token
 
+        if self.state.bot_fail:
+            self._json(500, {"ok": False,
+                           "description": "mock failure mode: bot API 500"})
+            return
         if method == "getMe":
             self._json(200, {"ok": True, "result": {
                 "id": 424242,
@@ -207,6 +213,8 @@ class MockHandler(BaseHTTPRequestHandler):
             updates = self.state.poll_updates(offset, timeout)
             self._json(200, {"ok": True, "result": updates})
         elif method == "sendMessage":
+            if self.state.bot_delay:
+                time.sleep(self.state.bot_delay)
             chat_id = body.get("chat_id")
             text = body.get("text", "")
             # Reply-targeting test hook: reply_to_message_id "404" simulates a
@@ -283,6 +291,17 @@ class MockHandler(BaseHTTPRequestHandler):
         elif path == "/admin/updates":
             self._json(200, {"ok": True, "updates": sorted(
                 self.state.updates.values(), key=lambda u: u["update_id"])})
+        elif path == "/admin/fail":
+            if isinstance(body, dict) and "on" in body:
+                self.state.bot_fail = bool(body.get("on"))
+            self._json(200, {"ok": True, "bot_fail": self.state.bot_fail})
+        elif path == "/admin/delay":
+            if isinstance(body, dict) and "secs" in body:
+                try:
+                    self.state.bot_delay = max(0.0, float(body.get("secs")))
+                except (TypeError, ValueError):
+                    pass
+            self._json(200, {"ok": True, "bot_delay": self.state.bot_delay})
         elif path == "/admin/reset":
             MockHandler.state = MockTelegramState()
             self._json(200, {"ok": True})

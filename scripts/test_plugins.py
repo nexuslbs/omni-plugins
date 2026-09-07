@@ -165,6 +165,11 @@ def spawn_stdio(cmd, cwd=None, env=None):
                             cwd=cwd, env=e)
 
 def stdio_call(proc, method, params=None, req_id=1, timeout=30):
+    """Send one JSON-RPC request and wait for the matching response, bounded
+    by `timeout`. The child stdout is drained by a daemon reader thread into
+    a queue, so a wedged/silent child FAILS the call (queue timeout / EOF)
+    instead of blocking readline forever and hanging the whole suite."""
+    q = _proc_stdout_queue(proc)
     req = {"id": req_id, "method": method}
     if params is not None:
         req["params"] = params
@@ -172,9 +177,12 @@ def stdio_call(proc, method, params=None, req_id=1, timeout=30):
     proc.stdin.flush()
     deadline = time.time() + timeout
     while time.time() < deadline:
-        line = proc.stdout.readline()
-        if not line:
-            continue
+        try:
+            line = q.get(timeout=max(0.05, deadline - time.time()))
+        except Exception:
+            break  # queue timeout: no response in time -> bounded failure
+        if line is None:
+            break  # EOF: child exited without answering
         try:
             resp = json.loads(line)
         except json.JSONDecodeError:
@@ -182,6 +190,31 @@ def stdio_call(proc, method, params=None, req_id=1, timeout=30):
         if resp.get("id") == req_id:
             return resp
     raise AssertionError(f"no response for {method} within {timeout}s")
+
+
+def _proc_stdout_queue(proc):
+    """Start (once) a daemon thread draining proc.stdout into a queue."""
+    import queue
+    import threading
+    q = getattr(proc, "_c5_stdout_q", None)
+    if q is not None:
+        return q
+    q = queue.Queue()
+
+    def _drain():
+        try:
+            for line in proc.stdout:
+                q.put(line)
+        except Exception:
+            pass
+        finally:
+            q.put(None)
+
+    t = threading.Thread(target=_drain, daemon=True)
+    t.start()
+    proc._c5_stdout_q = q
+    return q
+
 
 def stop_proc(proc):
     if proc is None:
@@ -532,6 +565,58 @@ print("  test_plugins.py - omni-plugins remote registry test suite")
 print(f"  repo: {REMOTE_REPO}  base: {BASE}")
 print("=" * 60)
 
+def test_stdio_platforms_robustness():
+    """test-js / test-python / test-rust stdio platforms: robustness contract
+    (A7 checklist) - an unknown-method call and a garbage stdin line must not
+    crash or hang the platform (it still answers initialize afterwards), and
+    closing stdin makes the platform exit cleanly within 8s (no zombie
+    process left behind: daemon poll/worker threads never keep it alive)."""
+    cases = [
+        ("test-js", ["node", "server.js"], "platforms/test-js"),
+        ("test-python", ["python3", "platform.py"], "platforms/test-python"),
+        ("test-rust", ["./target/release/test-rust-platform"], "platforms/test-rust"),
+    ]
+    for name, cmd, rel in cases:
+        d = f"{REMOTE_REPO}/{rel}"
+        if name == "test-rust":
+            bin_path = f"{d}/target/release/test-rust-platform"
+            if not os.path.exists(bin_path):
+                raise SkipTest("test-rust platform binary not built "
+                               "(rust crate; compile in dev)")
+            proc = spawn_stdio([bin_path], cwd=d)
+        else:
+            proc = spawn_stdio(cmd, cwd=d)
+        try:
+            init = stdio_call(proc, "initialize", {}, req_id=1, timeout=15)
+            assert init.get("result", {}).get("name") == name, \
+                f"{name}: initialize name wrong: {init}"
+            # Unknown-method probe: fire-and-forget, then prove the platform is
+            # still alive and answering (no crash/wedge on an unknown method).
+            proc.stdin.write(json.dumps({"id": 2, "method": "no_such_method_c5"}) + "\n")
+            proc.stdin.flush()
+            r = stdio_call(proc, "initialize", {}, req_id=3, timeout=15)
+            assert r.get("result", {}).get("name") == name, \
+                f"{name}: unresponsive after unknown-method input: {str(r)[:200]}"
+            # Garbage line probe: not valid JSON at all; must be tolerated
+            # (ignored or answered), never fatal.
+            proc.stdin.write("this is not json {.\n")
+            proc.stdin.flush()
+            r2 = stdio_call(proc, "initialize", {}, req_id=4, timeout=15)
+            assert r2.get("result", {}).get("name") == name, \
+                f"{name}: unresponsive after garbage stdin line: {str(r2)[:200]}"
+            # Cleanup: closing stdin ends the stdio session; the platform must
+            # exit promptly - no zombie process survives the parent's close.
+            try:
+                proc.stdin.close()
+            except Exception:
+                pass
+            rc = proc.wait(timeout=8)  # TimeoutExpired == zombie (defect)
+            print(f"  ok: {name} robustness - unknown method tolerated, garbage "
+                  f"tolerated, clean exit on stdin close (rc={rc})")
+        finally:
+            stop_proc(proc)
+
+
 test(test_registry_completeness)
 test(test_tool_plugins)
 test(test_noop_full_provider)
@@ -539,6 +624,7 @@ test(test_noop_provider)
 test(test_platforms_registered)
 test(test_telegram_platform_mock)
 test(test_stdio_platforms)
+test(test_stdio_platforms_robustness)
 
 print(f"\n{'=' * 60}")
 print(f"  RESULTS: {tests_pass} passed, {tests_fail} failed, {len(skips)} skipped "
