@@ -27,7 +27,10 @@ here are consumed by omni-stack / omni-root deployments at runtime.
 
 - Rust tool plugins: `cargo check` (and `cargo fmt --check`) inside the
   plugin directory must pass; they compile standalone (no omniagent
-  dependency - `mcp-server-util` is the shared runtime).
+  dependency) - each Rust plugin is its own MCP server binary speaking
+  JSON-RPC over stdio (see `src/main.rs` + `mcp-config.json` in the plugin
+  directory). No shared runtime crate is required; dependencies are declared
+  per-plugin in its own `Cargo.toml`.
 - Python plugins: `python3 -m py_compile` on every `.py` file.
 - The omni-deployer `scripts/tests.py` installs plugins from this repo
   (`install-git`) and verifies MCP tools register; changes to plugin
