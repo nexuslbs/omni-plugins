@@ -269,7 +269,7 @@ EXPECTED_TOOLS = {
     "test-python": ["echo", "lorem", "save", "error", "wait"],
     "test-rust-tool": ["wait", "echo", "save", "error"],
     "test-rust-tool-2": ["hello"],
-    "web": ["web_search"],
+    "web": ["web_search", "web_extract"],
 }
 
 # Rust crates: the omniagent resolves the MCP server binary from the plugin

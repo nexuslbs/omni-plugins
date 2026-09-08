@@ -1,28 +1,38 @@
 #!/usr/bin/env python3
-"""web MCP server : web_search tool with provider abstraction.
+"""web MCP server : web_search (provider abstraction) + web_extract (R2).
 
 Tools:
-  - web_search: search the web through a swappable provider engine.
+  - web_search : search the web through a swappable provider engine.
+  - web_extract: readable HTML -> Markdown extraction from a URL (cap + spill).
 
-Providers (provider-abstraction, mirroring OpenClaw/Hermes web_search):
+web_search providers (provider-abstraction, mirroring OpenClaw/Hermes):
   - tavily  - POST JSON, api_key in body (https://tavily.com)
   - brave   - GET, X-Subscription-Token header (https://brave.com/search/api/)
   - exa     - POST JSON, x-api-key header (https://exa.ai)
   - ddg     - keyless DuckDuckGo HTML endpoint, parsed with stdlib html.parser
+
+web_extract (code-improvement plan R2): fetches a page (static HTML only,
+bounded 2 MB download), converts the readable content to Markdown via
+tools/web/extract.py (stdlib html.parser; drops scripts/nav/ads/forms), and
+returns title + final URL + markdown. Output discipline: the inline result is
+capped (default 8000 chars, max 50000); when the extraction exceeds the cap
+the FULL markdown is spilled to a file whose path is reported, so a huge page
+can never flood the agent context.
 
 Configuration is read from env vars. A deployment sets these through the
 plugin config (config_schema keys). API keys are stored in the secrets store
 and referenced by NAME ($secret:NAME, resolved by the core at configure time)
 so that no key ever appears in a repo or config file:
 
-  SEARCH_PROVIDER   default provider when the call omits 'provider' (tavily)
-  TAVILY_API_KEY    Tavily API key            (secret, referenced by name)
-  BRAVE_API_KEY     Brave Search API key      (secret, referenced by name)
-  EXA_API_KEY       Exa API key               (secret, referenced by name)
+  SEARCH_PROVIDER        default provider when the call omits 'provider' (tavily)
+  TAVILY_API_KEY         Tavily API key            (secret, referenced by name)
+  BRAVE_API_KEY          Brave Search API key      (secret, referenced by name)
+  EXA_API_KEY            Exa API key               (secret, referenced by name)
+  WEB_EXTRACT_SPILL_DIR  dir for web_extract spill files (default: system tmp)
   TAVILY_API_URL / BRAVE_API_URL / EXA_API_URL / DDG_URL
-                    endpoint overrides (tests/mirrors; official defaults)
+                         endpoint overrides (tests/mirrors; official defaults)
 
-Output discipline (code-improvement plan R1): results are capped
+Output discipline (code-improvement plan R1): web_search results are capped
 (max_results clamped to 1..10), every snippet is truncated, and the whole
 inline result is capped with an explicit "[truncated ...]" note when the cap
 trips, so a huge provider response can never flood the agent context.
@@ -31,14 +41,20 @@ MCP JSON-RPC over stdio. Python stdlib only (no pip dependencies),
 mirroring tools/actions/server.py.
 """
 
+import hashlib
 import html as html_mod
 import json
 import logging
+import os
 import sys
+import tempfile
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
 from html.parser import HTMLParser
+
+import extract  # sibling module (tools/web/extract.py): fetch_page + html_to_markdown
 
 logging.basicConfig(
     level=logging.INFO,
@@ -80,6 +96,11 @@ INLINE_MAX_CHARS = 3500  # items are snippet-capped (~300 chars each, max 10),
 HTTP_TIMEOUT_SECS = 20
 USER_AGENT = "Mozilla/5.0 (compatible; omniagent-web-search/0.1; +https://github.com/nexuslbs/omni-plugins)"
 
+# web_extract output discipline (R2): inline cap + spill-to-file.
+EXTRACT_INLINE_MAX_CHARS = 8000    # default inline cap for the markdown
+EXTRACT_MAX_CHARS_MIN = 1000       # user-provided max_chars clamp
+EXTRACT_MAX_CHARS_MAX = 50000      # hard ceiling for the inline cap
+
 
 # --------------------------------------------------------------------------
 # JSON-RPC / MCP protocol helpers
@@ -107,15 +128,8 @@ def make_tool_result(text, is_error=False):
 # --------------------------------------------------------------------------
 
 def cfg(key, default=""):
-    val = (os_environ_get(key) or "").strip()
+    val = (os.environ.get(key) or "").strip()
     return val if val else default
-
-
-def os_environ_get(key):
-    try:
-        return __import__("os").environ.get(key)
-    except Exception:  # pragma: no cover
-        return None
 
 
 def provider_endpoint(provider):
@@ -394,6 +408,105 @@ def handle_web_search(args):
     return make_tool_result("".join(lines))
 
 
+# --------------------------------------------------------------------------
+# tool: web_extract
+# --------------------------------------------------------------------------
+
+def _spill_web_extract(url, markdown):
+    """Write the full extraction to a spill file.
+
+    Uses WEB_EXTRACT_SPILL_DIR when configured (a host-visible path under the
+    deployment data dir) and falls back to the system temp dir. Returns
+    (path, byte_size) or raises on failure.
+    """
+    spill_dir = cfg("WEB_EXTRACT_SPILL_DIR") or tempfile.gettempdir()
+    try:
+        os.makedirs(spill_dir, exist_ok=True)
+    except Exception:
+        spill_dir = tempfile.gettempdir()
+        try:
+            os.makedirs(spill_dir, exist_ok=True)
+        except Exception:
+            pass
+    digest = hashlib.sha1(url.encode("utf-8")).hexdigest()[:10]
+    path = os.path.join(spill_dir, "web_extract_%s_%s.md" % (digest, int(time.time())))
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write(markdown)
+    return path, len(markdown.encode("utf-8"))
+
+
+def handle_web_extract(args):
+    url = str(args.get("url") or "").strip()
+    if not url:
+        return make_tool_result(
+            "web_extract error: 'url' is required (string, the http(s) URL to extract)", True)
+    parsed = urllib.parse.urlparse(url)
+    if parsed.scheme not in ("http", "https") or not parsed.netloc:
+        return make_tool_result(
+            "web_extract error: unsupported URL %r: only http(s) URLs are "
+            "supported (use the raw fetch tool for other schemes)" % url, True)
+    # Inline cap (user-adjustable, hard-clamped).
+    max_chars = EXTRACT_INLINE_MAX_CHARS
+    raw_max = args.get("max_chars")
+    if raw_max not in (None, ""):
+        try:
+            max_chars = int(raw_max)
+        except (TypeError, ValueError):
+            max_chars = EXTRACT_INLINE_MAX_CHARS
+    max_chars = max(EXTRACT_MAX_CHARS_MIN, min(max_chars, EXTRACT_MAX_CHARS_MAX))
+
+    try:
+        page = extract.fetch_page(url)
+    except RuntimeError as e:
+        return make_tool_result("web_extract error: %s" % e, True)
+    except Exception as e:  # pragma: no cover - defensive
+        log.exception("web_extract fetch crashed")
+        return make_tool_result("web_extract error: unexpected failure: %s" % e, True)
+
+    final_url = page.get("url") or url
+    try:
+        markdown, meta = extract.html_to_markdown(page.get("html") or "", base_url=final_url)
+    except Exception as e:  # pragma: no cover - defensive
+        log.exception("web_extract parse crashed")
+        return make_tool_result("web_extract error: %s" % e, True)
+
+    if not markdown:
+        return make_tool_result(
+            "web_extract: no readable text content found at %s (the page may be "
+            "JavaScript-rendered; this tool extracts static HTML only)" % final_url)
+
+    title = (meta.get("title") or meta.get("first_h1") or "").strip()
+    if page.get("body_truncated"):
+        markdown += ("\n\n[note: the page body exceeded the download cap; the "
+                     "extraction may be incomplete]")
+    header = ["# web_extract: %s" % (title or final_url),
+              "source url: %s" % final_url, ""]
+    header_len = sum(len(s) + 1 for s in header)
+
+    if len(markdown) + header_len <= max_chars:
+        return make_tool_result("\n".join(header) + "\n" + markdown)
+
+    # Output discipline: cap + spill. The full extraction goes to a file whose
+    # path is always reported first so it can never be cut by the cap.
+    total = len(markdown)
+    try:
+        spill_path, _size = _spill_web_extract(final_url, markdown)
+    except Exception as e:
+        log.exception("web_extract spill failed")
+        return make_tool_result(
+            "web_extract error: extraction is %d chars (inline cap %d) and the "
+            "spill file could not be written: %s" % (total, max_chars, e), True)
+    note = ("[truncated: extraction is %d chars; inline capped at %d. FULL "
+            "extraction spilled to file: %s (read it with filesystem_read)]"
+            % (total, max_chars, spill_path))
+    budget = max_chars - header_len - len(note) - 1
+    if budget > 0:
+        return make_tool_result(
+            "\n".join(header) + "\n" + note + "\n\n" + markdown[:budget] +
+            "\n\n[... preview truncated; see the spilled file for the full text]")
+    return make_tool_result("\n".join(header) + "\n" + note)
+
+
 TOOLS = [
     {
         "name": "web_search",
@@ -419,10 +532,36 @@ TOOLS = [
             "required": ["query"],
         },
     },
+    {
+        "name": "web_extract",
+        "description": (
+            "Extract the readable content of a web page as Markdown: fetch the "
+            "URL (static HTML only, bounded 2 MB download), drop scripts, nav, "
+            "ads, forms and boilerplate, and convert headings, paragraphs, "
+            "links, images, lists, quotes, code and simple tables. Returns the "
+            "page title, the final URL after redirects, and the markdown, "
+            "capped inline (default 8000 chars; raise with 'max_chars' up to "
+            "50000). When the extraction exceeds the cap the FULL text is "
+            "spilled to a file whose path is reported first, so a huge page "
+            "can never flood the agent context. Use after web_search to read "
+            "a result page in depth."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "url": {"type": "string",
+                        "description": "http(s) URL of the page to extract (required)."},
+                "max_chars": {"type": "integer",
+                              "description": "Inline character cap (1000-50000, default 8000). Over-cap extractions are spilled to a file."},
+            },
+            "required": ["url"],
+        },
+    },
 ]
 
 HANDLERS = {
     "web_search": handle_web_search,
+    "web_extract": handle_web_extract,
 }
 
 
@@ -434,7 +573,7 @@ def handle_initialize(req):
     return make_success(req.get("id"), {
         "protocolVersion": MCP_PROTOCOL_VERSION,
         "capabilities": {"tools": {"listChanged": False}},
-        "serverInfo": {"name": "web", "version": "0.1.0"},
+        "serverInfo": {"name": "web", "version": "0.2.0"},
     })
 
 

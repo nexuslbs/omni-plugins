@@ -1,8 +1,8 @@
 {
   "name": "web",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "type": "mcp",
-  "description": "Python MCP web tools server : web_search with provider abstraction (Tavily/Brave/DuckDuckGo/Exa). API keys are referenced from the secrets store by name ($secret:NAME) and are never committed.",
+  "description": "Python MCP web tools server: web_search (provider abstraction over Tavily/Brave/DuckDuckGo/Exa) and web_extract (readable markdown extraction from a URL, capped inline with spill-to-file). API keys are referenced from the secrets store by name ($secret:NAME) and are never committed.",
   "config_schema": [
     {
       "key": "SEARCH_PROVIDER",
@@ -33,6 +33,13 @@
       "description": "Exa API key. Reference the secret by name: set to $secret:EXA_API_KEY"
     },
     {
+      "key": "WEB_EXTRACT_SPILL_DIR",
+      "label": "web_extract spill directory",
+      "type": "string",
+      "default": "",
+      "description": "Directory where web_extract spills full extractions that exceed the inline cap. Set to a host-visible path under the deployment data dir (e.g. /opt/omni/data/web_extract). Empty = system temp dir."
+    },
+    {
       "key": "TAVILY_API_URL",
       "label": "Tavily API URL",
       "type": "string",
@@ -41,7 +48,7 @@
     },
     {
       "key": "BRAVE_API_URL",
-      "label": "Brave API URL",
+      "label": "Brave Search API URL",
       "type": "string",
       "default": "https://api.search.brave.com/res/v1/web/search",
       "description": "Override the Brave endpoint (tests/mirrors)"
