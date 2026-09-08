@@ -34,6 +34,9 @@ tools:
   test-rust-tool-2:
     url: https://github.com/nexuslbs/omni-plugins.git
     path: tools/test-rust-tool-2
+  web:
+    url: https://github.com/nexuslbs/omni-plugins.git
+    path: tools/web
 platforms:
   telegram:
     url: https://github.com/nexuslbs/omni-plugins.git

@@ -1,0 +1,64 @@
+{
+  "name": "web",
+  "version": "0.1.0",
+  "type": "mcp",
+  "description": "Python MCP web tools server : web_search with provider abstraction (Tavily/Brave/DuckDuckGo/Exa). API keys are referenced from the secrets store by name ($secret:NAME) and are never committed.",
+  "config_schema": [
+    {
+      "key": "SEARCH_PROVIDER",
+      "label": "Default provider",
+      "type": "string",
+      "default": "tavily",
+      "description": "Default search provider when a call omits 'provider': tavily | brave | ddg | exa"
+    },
+    {
+      "key": "TAVILY_API_KEY",
+      "label": "Tavily API key",
+      "type": "string",
+      "default": "",
+      "description": "Tavily API key. Reference the secret by name: set to $secret:TAVILY_API_KEY"
+    },
+    {
+      "key": "BRAVE_API_KEY",
+      "label": "Brave Search API key",
+      "type": "string",
+      "default": "",
+      "description": "Brave Search API key. Reference the secret by name: set to $secret:BRAVE_API_KEY"
+    },
+    {
+      "key": "EXA_API_KEY",
+      "label": "Exa API key",
+      "type": "string",
+      "default": "",
+      "description": "Exa API key. Reference the secret by name: set to $secret:EXA_API_KEY"
+    },
+    {
+      "key": "TAVILY_API_URL",
+      "label": "Tavily API URL",
+      "type": "string",
+      "default": "https://api.tavily.com/search",
+      "description": "Override the Tavily endpoint (tests/mirrors)"
+    },
+    {
+      "key": "BRAVE_API_URL",
+      "label": "Brave API URL",
+      "type": "string",
+      "default": "https://api.search.brave.com/res/v1/web/search",
+      "description": "Override the Brave endpoint (tests/mirrors)"
+    },
+    {
+      "key": "EXA_API_URL",
+      "label": "Exa API URL",
+      "type": "string",
+      "default": "https://api.exa.ai/search",
+      "description": "Override the Exa endpoint (tests/mirrors)"
+    },
+    {
+      "key": "DDG_URL",
+      "label": "DuckDuckGo HTML URL",
+      "type": "string",
+      "default": "https://html.duckduckgo.com/html/",
+      "description": "Override the DuckDuckGo HTML endpoint (tests/mirrors)"
+    }
+  ]
+}

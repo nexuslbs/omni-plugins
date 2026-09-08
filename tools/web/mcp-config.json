@@ -1,0 +1,15 @@
+{
+  "servers": [
+    {
+      "name": "web",
+      "transport": "stdio",
+      "command": "python3",
+      "args": ["server.py"],
+      "env": {},
+      "timeout_secs": 60,
+      "max_retries": 1,
+      "pool_size": 1,
+      "allowed_tools": ["*"]
+    }
+  ]
+}
