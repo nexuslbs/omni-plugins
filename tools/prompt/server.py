@@ -1110,7 +1110,7 @@ def handle_generate(req_id, arguments, meta):
         parts = []
         parts.append(build_dynamic_identity(tool_names))
         parts.append(TOOL_GUIDANCE)
-        parts.append(f"Active Hermes profile: {profile_name}.")
+        parts.append(f"Active profile: {profile_name}.")
         if system_message:
             parts.append(system_message)
         hint = PLATFORM_HINTS.get(platform)
