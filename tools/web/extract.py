@@ -175,6 +175,7 @@ class _HtmlToMarkdown(HTMLParser):
         self._a_buf = []
         self._a_href = None
         self._q = 0                 # blockquote nesting depth
+        self._q_line = 0            # pending "> " prefix owed at next content
         self._in_li = 0
         self._lists = []            # open list containers: {"kind","n"}
         self._in_table = False
@@ -204,13 +205,22 @@ class _HtmlToMarkdown(HTMLParser):
             return
 
     def _block_start(self):
-        """Separate blocks with a blank line; quote-prefix when inside a quote."""
+        """Separate blocks with a blank line; remember the blockquote prefix
+        owed on the line that follows (it is emitted lazily with real
+        content, so empty quotes never leave a stray bare '>' line)."""
         self._trim_tail()
+        self._q_line = self._q
         if not self.chunks:
             return
         self.chunks.append("\n\n")
-        if self._q:
-            self.chunks.append("> " * self._q)
+
+    def _flush_quote_prefix(self):
+        """Emit the pending blockquote prefix ("> " per nesting level) before
+        content that opens a new line inside a quote. Lazy: emits nothing
+        unless real content follows."""
+        if self._q_line:
+            self.chunks.append("> " * self._q_line)
+            self._q_line = 0
 
     def _soft_newline(self):
         self._trim_tail()
@@ -223,6 +233,7 @@ class _HtmlToMarkdown(HTMLParser):
         elif self._in_cell:
             self._cell.append(text)
         else:
+            self._flush_quote_prefix()
             self.chunks.append(text)
 
     # ---- parser entry points -------------------------------------------
@@ -240,6 +251,7 @@ class _HtmlToMarkdown(HTMLParser):
             return
         if tag in HEADING_LEVELS:
             self._block_start()
+            self._flush_quote_prefix()
             self.chunks.append("#" * HEADING_LEVELS[tag] + " ")
             if tag == "h1" and not self._h1_done and self._cap_h1 is None:
                 self._cap_h1 = []
@@ -251,8 +263,8 @@ class _HtmlToMarkdown(HTMLParser):
             self._start_text_block()
             return
         if tag == "blockquote":
-            self._block_start()
             self._q += 1
+            self._block_start()
             return
         if tag == "pre":
             self._block_start()
@@ -277,6 +289,7 @@ class _HtmlToMarkdown(HTMLParser):
             return
         if tag == "hr":
             self._block_start()
+            self._flush_quote_prefix()
             self.chunks.append("---")
             return
         if tag == "br":
@@ -352,6 +365,7 @@ class _HtmlToMarkdown(HTMLParser):
                 self._in_table = False
                 rendered = self._render_table()
                 if rendered:
+                    self._flush_quote_prefix()
                     self.chunks.append(rendered)
                     self._block_start()
             return
@@ -375,6 +389,8 @@ class _HtmlToMarkdown(HTMLParser):
         if tag == "blockquote":
             if self._q > 0:
                 self._q -= 1
+                if self._q == 0:
+                    self._q_line = 0
             return
         if tag == "li":
             if self._in_li > 0:
@@ -426,6 +442,7 @@ class _HtmlToMarkdown(HTMLParser):
                 text = text[1:]
         if self._cap_h1 is not None:
             self._cap_h1.append(text)
+        self._flush_quote_prefix()
         if text:
             self.chunks.append(text)
 
@@ -450,6 +467,7 @@ class _HtmlToMarkdown(HTMLParser):
     def _start_list_item(self):
         if self.chunks and not self.chunks[-1].endswith("\n"):
             self.chunks.append("\n")
+            self._q_line = self._q
         if not self._lists:
             self._lists.append({"kind": "ul", "n": 0})
         top = self._lists[-1]
@@ -459,6 +477,7 @@ class _HtmlToMarkdown(HTMLParser):
             marker = "%d. " % top["n"]
         else:
             marker = "- "
+        self._flush_quote_prefix()
         self.chunks.append(indent + marker)
         self._in_li += 1
 
@@ -474,6 +493,7 @@ class _HtmlToMarkdown(HTMLParser):
         elif self._in_cell:
             self._cell.append(syntax)
         else:
+            self._flush_quote_prefix()
             self.chunks.append(syntax)
 
     def _render_table(self):
