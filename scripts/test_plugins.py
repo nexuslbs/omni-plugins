@@ -261,6 +261,7 @@ EXPECTED_TOOLS = {
     "actions": ["hindsight", "relevance", "setup"],
     "cosmos-rust-tool": ["hello"],
     "cron-echo": ["cron_echo"],
+    "exec": ["exec_run", "exec_approve"],
     "hindsight": ["recall", "reflect", "retain"],
     "memory": ["list", "review", "promote", "manage", "summary"],
     "paperclip": ["paperclip"],

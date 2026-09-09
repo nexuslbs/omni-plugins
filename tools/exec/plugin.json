@@ -1,0 +1,85 @@
+{
+  "name": "exec",
+  "version": "0.1.0",
+  "type": "mcp",
+  "description": "Sandboxed code/shell execution tool plugin (R3): exec_run proposes a command (NEVER executes) and exec_approve runs the exact stored command in a throwaway, network-isolated docker container (uid nobody, all capabilities dropped, read-only rootfs, cpu/mem/pids bounds, minimal env). Per-run explicit approval gate with an operator-held key ($secret:EXEC_APPROVAL_KEY), TTL-bound single-use requests, audit log, cap + spill output. NO production access by design: --network none means the payload cannot reach production containers, the DB or any network.",
+  "config_schema": [
+    {
+      "key": "EXEC_APPROVAL_MODE",
+      "label": "Approval mode",
+      "type": "string",
+      "default": "require",
+      "description": "require (default) = every run needs an explicit approval; deny = plugin is inert and refuses everything"
+    },
+    {
+      "key": "EXEC_APPROVAL_KEY",
+      "label": "Approval key",
+      "type": "string",
+      "default": "",
+      "description": "Operator-held secret that exec_approve must match to execute a request. Reference the secret by name: set to $secret:EXEC_APPROVAL_KEY. Empty = nothing can ever be approved (plugin inert)."
+    },
+    {
+      "key": "EXEC_APPROVAL_TTL_SECS",
+      "label": "Approval request TTL (seconds)",
+      "type": "integer",
+      "default": 600,
+      "description": "How long a pending exec_run request stays approvable (clamped 60-3600)"
+    },
+    {
+      "key": "EXEC_IMAGE",
+      "label": "Sandbox image",
+      "type": "string",
+      "default": "",
+      "description": "Pinned docker image the sandboxed command runs in (must already exist on the host; the plugin never pulls). Example: omniagent-dev:latest in omnidev. Empty = execution denied."
+    },
+    {
+      "key": "EXEC_TIMEOUT_SECS",
+      "label": "Default run timeout (seconds)",
+      "type": "integer",
+      "default": 30,
+      "description": "Default per-run timeout when a call omits timeout_secs (clamped 1-300)"
+    },
+    {
+      "key": "EXEC_INLINE_MAX_CHARS",
+      "label": "Inline output cap (chars)",
+      "type": "integer",
+      "default": 8000,
+      "description": "Inline result cap; larger outputs are spilled to a file whose path is reported first (clamped 1000-50000)"
+    },
+    {
+      "key": "EXEC_OUTPUT_HARD_CAP",
+      "label": "Captured output hard cap (bytes)",
+      "type": "integer",
+      "default": 1048576,
+      "description": "Total captured output before the run is killed and truncation is reported (clamped 65536-16777216)"
+    },
+    {
+      "key": "EXEC_SPILL_DIR",
+      "label": "Spill/state directory",
+      "type": "string",
+      "default": "",
+      "description": "Directory for output spill files and approval-request state. Point at a host-visible path under the deployment data dir (e.g. /opt/omni/data/exec). Empty = system temp dir."
+    },
+    {
+      "key": "EXEC_CPUS",
+      "label": "Sandbox CPU limit",
+      "type": "string",
+      "default": "1",
+      "description": "docker --cpus limit for the sandbox container"
+    },
+    {
+      "key": "EXEC_MEM",
+      "label": "Sandbox memory limit",
+      "type": "string",
+      "default": "256m",
+      "description": "docker --memory limit for the sandbox container"
+    },
+    {
+      "key": "EXEC_PIDS",
+      "label": "Sandbox pids limit",
+      "type": "string",
+      "default": "64",
+      "description": "docker --pids-limit for the sandbox container"
+    }
+  ]
+}

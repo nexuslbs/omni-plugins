@@ -10,6 +10,9 @@ tools:
   cron-echo:
     url: https://github.com/nexuslbs/omni-plugins.git
     path: tools/cron-echo
+  exec:
+    url: https://github.com/nexuslbs/omni-plugins.git
+    path: tools/exec
   hindsight:
     url: https://github.com/nexuslbs/omni-plugins.git
     path: tools/hindsight
