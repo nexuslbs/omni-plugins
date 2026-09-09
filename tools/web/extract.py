@@ -171,6 +171,7 @@ class _HtmlToMarkdown(HTMLParser):
         self.chunks = []            # output pieces (text + structural control)
         self._skip_stack = []       # tags currently dropped (subtree)
         self._in_pre = False
+        self._pre_buf = []          # raw text buffered while inside <pre>
         self._in_a = False
         self._a_buf = []
         self._a_href = None
@@ -222,6 +223,25 @@ class _HtmlToMarkdown(HTMLParser):
             self.chunks.append("> " * self._q_line)
             self._q_line = 0
 
+    def _emit_block(self, text):
+        """Append a pre-rendered multi-line block (fenced code, table rows).
+
+        When a blockquote is open every emitted line carries the quote prefix
+        ("> " per nesting level), so fenced code and tables nested inside a
+        quote stay quoted in the markdown; a single prefix flush would leave
+        the continuation lines unquoted. The pending lazy prefix is consumed
+        into the per-line prefixes rather than emitted first, so the first
+        line is never prefixed twice."""
+        if not text:
+            return
+        if self._q:
+            self._q_line = 0
+            pref = "> " * self._q
+            self.chunks.append(pref + text.replace("\n", "\n" + pref))
+        else:
+            self._flush_quote_prefix()
+            self.chunks.append(text)
+
     def _soft_newline(self):
         self._trim_tail()
         if self.chunks:
@@ -268,7 +288,7 @@ class _HtmlToMarkdown(HTMLParser):
             return
         if tag == "pre":
             self._block_start()
-            self.chunks.append("```\n")
+            self._pre_buf = []
             self._in_pre = True
             return
         if tag == "table":
@@ -339,9 +359,11 @@ class _HtmlToMarkdown(HTMLParser):
         if self._in_pre:
             if tag == "pre":
                 self._in_pre = False
-                if self.chunks and not self.chunks[-1].endswith("\n"):
-                    self.chunks.append("\n")
-                self.chunks.append("```")
+                content = "".join(self._pre_buf)
+                self._pre_buf = []
+                if content and not content.endswith("\n"):
+                    content += "\n"
+                self._emit_block("```\n" + content + "```")
                 self._block_start()
             return
         if self._in_title:
@@ -365,8 +387,7 @@ class _HtmlToMarkdown(HTMLParser):
                 self._in_table = False
                 rendered = self._render_table()
                 if rendered:
-                    self._flush_quote_prefix()
-                    self.chunks.append(rendered)
+                    self._emit_block(rendered)
                     self._block_start()
             return
         if self._in_a and tag == "a":
@@ -422,7 +443,7 @@ class _HtmlToMarkdown(HTMLParser):
                 self._title_buf.append(data)
             return
         if self._in_pre:
-            self.chunks.append(data)
+            self._pre_buf.append(data)
             return
         text = _collapse(data)
         if not text:
@@ -445,6 +466,17 @@ class _HtmlToMarkdown(HTMLParser):
         self._flush_quote_prefix()
         if text:
             self.chunks.append(text)
+
+    def close(self):
+        """Flush a dangling <pre> (malformed HTML whose </pre> never comes)
+        so the buffered code content still reaches the output."""
+        if self._in_pre:
+            content = "".join(self._pre_buf)
+            self._in_pre = False
+            self._pre_buf = []
+            self._emit_block("```\n" + content)
+            self._block_start()
+        super().close()
 
     # ---- helpers --------------------------------------------------------
 
@@ -520,14 +552,24 @@ class _HtmlToMarkdown(HTMLParser):
 
 def _postprocess(text):
     """Normalize the raw markdown: max one blank line between blocks, drop
-    empty quote lines, keep code fences verbatim."""
+    empty quote lines, keep code fences verbatim. Fences nested inside
+    blockquotes carry a "> " marker on every line; they are recognised by
+    stripping that marker, so quoted code keeps its blank lines intact."""
     out = []
     fence = False
+    fence_q = 0
     blank = 0
     for raw_line in text.split("\n"):
         line = raw_line.rstrip()
-        if line.startswith("```"):
+        core = line
+        nq = 0
+        while core.startswith("> "):
+            core = core[2:]
+            nq += 1
+        if core.startswith("```") and (not fence or nq == fence_q):
             fence = not fence
+            if fence:
+                fence_q = nq
         if not fence:
             if line.strip() == "":
                 if out and blank == 0:
