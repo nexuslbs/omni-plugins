@@ -1,4 +1,4 @@
-# exec — sandboxed code/shell execution tool (R3)
+# exec: sandboxed code/shell execution tool (R3)
 
 MCP tool plugin providing two tools with an explicit approval gate:
 
@@ -14,14 +14,14 @@ MCP tool plugin providing two tools with an explicit approval gate:
 
 The approved command runs in a disposable docker container with:
 
-- `--network none` — no network devices at all: cannot reach production
+- `--network none`: no network devices at all, so it cannot reach production
   containers, the production DB, host ports, or the internet;
 - `--user 65534:65534` + `--cap-drop ALL` + `--security-opt
-  no-new-privileges` — nobody uid, zero capabilities, no privilege
+  no-new-privileges`: nobody uid, zero capabilities, no privilege
   escalation;
-- `--read-only` rootfs with a 16 MB tmpfs `/tmp` — nothing else writable;
+- `--read-only` rootfs with a 16 MB tmpfs `/tmp`: nothing else writable;
 - a minimal explicit environment (`PATH`, `HOME=/tmp`, `LANG`, `TMPDIR`,
-  `PYTHONDONTWRITEBYTECODE`) — the plugin process env (including the
+  `PYTHONDONTWRITEBYTECODE`); the plugin process env (including the
   approval key) is NEVER forwarded;
 - cpu/mem/pids resource bounds and a hard timeout with forced kill;
 - no volume mounts, element-wise argv construction (no shell), operator
@@ -66,8 +66,8 @@ context.
 
 ## Structure
 
-- `server.py` — MCP stdio server (exec_run / exec_approve), python stdlib only
-- `sandbox.py` — RequestStore (approval requests + audit) and DockerRunner
+- `server.py`: MCP stdio server (exec_run / exec_approve), python stdlib only
+- `sandbox.py`: RequestStore (approval requests + audit) and DockerRunner
   (throwaway-container backend)
-- `plugin.json` / `mcp-config.json` — plugin manifests and config schema
+- `plugin.json` / `mcp-config.json`: plugin manifests and config schema
 - design + approval-gate spec: `docs/r3-sandboxed-exec-design.md`

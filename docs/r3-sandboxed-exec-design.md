@@ -126,11 +126,11 @@ Flow:
 
 Audit: append-only JSONL at `<state>/audit.jsonl` with events
 request_created / approved / denied / executed, each carrying the command
-sha256, request id, outcome and a sha256 of the approval key - never the key
-or the raw command if the command may be sensitive? The raw command is
-needed for operator review before approval; the audit stores the command
-string for executed runs (that is what was approved) and only digests for
-denied runs. Log lines go to stderr (MCP server log) as well.
+sha256, request id, outcome and a sha256 of the approval key, never the key
+value. The raw command is needed for operator review before approval; the
+audit stores the command string for executed runs (that is what was
+approved) and only digests for denied runs. Log lines go to stderr (MCP
+server log) as well.
 
 Revocation: clearing `EXEC_APPROVAL_KEY` or setting mode=deny in config
 stops all future executions immediately; pending requests without an
