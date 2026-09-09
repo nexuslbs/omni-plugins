@@ -1,0 +1,43 @@
+{
+  "name": "vision",
+  "version": "0.1.0",
+  "type": "mcp",
+  "description": "Vision tool plugin (R7): read_image reads an image from a local path or http(s) URL and returns its metadata (format, mime, dimensions, bytes, sha256 prefix) plus a base64 data URI for vision-capable models. MODEL-GATED: the tool refuses to run unless the deployment operator has declared the active model vision-capable (VISION_ACTIVE_MODEL inside VISION_MODELS, or VISION_MODELS non-empty with no active model pinned); with no vision-capable model configured the plugin is inert and returns a guard refusal. Pure python stdlib (no pip dependencies); images are never persisted beyond the configured spill dir, and large data URIs are spilled to a file whose path is reported first (cap + spill discipline).",
+  "config_schema": [
+    {
+      "key": "VISION_MODELS",
+      "label": "Vision-capable models",
+      "type": "string",
+      "default": "",
+      "description": "Comma-separated list of model names that support image/vision input (the models that may consume read_image output). Empty = no vision-capable model declared, plugin inert (guard refusal). Example: deepseek-vl2"
+    },
+    {
+      "key": "VISION_ACTIVE_MODEL",
+      "label": "Active model",
+      "type": "string",
+      "default": "",
+      "description": "Name of the deployment's active model, if pinned. When set, read_image is allowed only if this model is in VISION_MODELS; when empty, VISION_MODELS non-empty is enough (operator declared the deployment vision-capable)."
+    },
+    {
+      "key": "VISION_MAX_BYTES",
+      "label": "Maximum image size (bytes)",
+      "type": "integer",
+      "default": 10485760,
+      "description": "Largest image that read_image will read (clamped 65536-67108864, default 10 MiB). Larger files/URLs are refused."
+    },
+    {
+      "key": "VISION_INLINE_MAX_CHARS",
+      "label": "Inline data URI cap (chars)",
+      "type": "integer",
+      "default": 8000,
+      "description": "Inline result cap for the base64 data URI; larger URIs are spilled to a file whose path is reported first (clamped 1000-50000)"
+    },
+    {
+      "key": "VISION_SPILL_DIR",
+      "label": "Spill directory",
+      "type": "string",
+      "default": "",
+      "description": "Directory where oversized data URIs are spilled (read_image_<sha10>_<epoch>.uri). Point at a host-visible path under the deployment data dir (e.g. /opt/omni/data/vision). Empty = system temp dir (omni-vision)."
+    }
+  ]
+}
