@@ -373,25 +373,33 @@ TOOL_GUIDANCE = (
 )
 
 
-PLATFORM_HINTS = {
-    "telegram": (
-        "You are on a text messaging communication platform, Telegram. "
-        "Standard markdown is automatically converted to Telegram format. Supported: **bold**, "
-        "*italic*, ~~strikethrough~~, ||spoiler||, `inline code`, ```code blocks```, [links](url), "
-        "and ## headers. Telegram has NO table syntax: prefer bullet lists or labeled key: value "
-        "pairs over pipe tables (any tables you do emit are auto-rewritten into row-group bullets, "
-        "which you can produce directly for cleaner output). You can send media files natively: "
-        "to deliver a file to the user, include MEDIA:/absolute/path/to/file in your response. "
-        "Images (.png, .jpg, .webp) appear as photos, audio (.ogg) sends as voice bubbles, and "
-        "videos (.mp4) play inline. You can also include image URLs in markdown format ![alt](url) "
-        "and they will be sent as native photos."
-    ),
-    "mattermost": (
-        "You are on a Mattermost messaging platform. Standard markdown formatting is supported: "
-        "**bold**, *italic*, `code`, ```code blocks```, [links](url), headings, lists, tables, "
-        "blockquotes. Mattermost supports most GFM (GitHub Flavored Markdown)."
-    ),
-}
+# Audit V-5: the formatting hint is OWNED by the platform plugin, which
+# advertises it as `capabilities.prompt_hint` in its `initialize` result; the
+# core forwards it to this tool as the `platform_hint` argument. This module
+# keeps NO platform-name to hint table (parity with the Rust copy).
+GENERIC_PLATFORM_HINT = (
+    "You are on a messaging platform. Use standard markdown formatting: "
+    "**bold**, *italic*, `code`, ```code blocks```, [links](url), headings, "
+    "lists, blockquotes. Avoid platform-specific syntax that may not be "
+    "supported."
+)
+
+
+def build_platform_hint(platform, declared):
+    """Return the `platform` section text, or None when there is no section.
+
+    1. a declared (non-empty) hint wins (the plugin owns its platform rules),
+    2. otherwise a named platform gets GENERIC_PLATFORM_HINT so an unknown
+       platform degrades gracefully instead of silently losing guidance,
+    3. an unnamed platform gets no section at all (historical behaviour).
+    """
+    if declared is not None:
+        hint = str(declared).strip()
+        if hint:
+            return hint
+    if not str(platform or "").strip():
+        return None
+    return GENERIC_PLATFORM_HINT
 
 
 # ---------------------------------------------------------------------------
@@ -1088,6 +1096,10 @@ def handle_generate(req_id, arguments, meta):
         args = arguments or {}
         profile_name = args.get("profile_name") or (meta or {}).get("profile_name") or "omni"
         platform = args.get("platform") or (meta or {}).get("platform") or ""
+        # V-5: hint declared by the platform plugin (forwarded by the core).
+        platform_hint = args.get("platform_hint")
+        if platform_hint is None and meta:
+            platform_hint = meta.get("platform_hint")
         system_message = args.get("system_message")
         user_message = args.get("user_message") or ""
         tool_names = args.get("tool_names") or []
@@ -1113,7 +1125,7 @@ def handle_generate(req_id, arguments, meta):
         parts.append(f"Active profile: {profile_name}.")
         if system_message:
             parts.append(system_message)
-        hint = PLATFORM_HINTS.get(platform)
+        hint = build_platform_hint(platform, platform_hint)
         if hint:
             parts.append(hint)
         memory_section = build_memory_section(memory_raw, cfg.get("memory_max_chars", 5000))
@@ -1788,6 +1800,10 @@ TOOLS = [
                 "platform": {
                     "type": "string",
                     "description": "Platform identifier (e.g. 'telegram', 'mattermost')"
+                },
+                "platform_hint": {
+                    "type": "string",
+                    "description": "Formatting hint declared by the platform plugin's initialize capabilities (audit V-5). Optional: when absent a named platform falls back to a generic markdown note."
                 },
                 "system_message": {
                     "type": "string",

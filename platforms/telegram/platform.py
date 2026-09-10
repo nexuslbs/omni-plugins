@@ -151,6 +151,9 @@ class TelegramPlatform:
             "capabilities": {
                 "inbound": True,
                 "outbound": True,
+                # V-5: this plugin OWNS its platform's formatting rules; the
+                # core forwards this hint to the prompt tool (`platform_hint`).
+                "prompt_hint": "You are on a text messaging communication platform, Telegram. Standard markdown is automatically converted to Telegram format. Supported: **bold**, *italic*, ~~strikethrough~~, ||spoiler||, `inline code`, ```code blocks```, [links](url), and ## headers. Telegram has NO table syntax: prefer bullet lists or labeled key: value pairs over pipe tables (any tables you do emit are auto-rewritten into row-group bullets, which you can produce directly for cleaner output). You can send media files natively: to deliver a file to the user, include MEDIA:/absolute/path/to/file in your response. Images (.png, .jpg, .webp) appear as photos, audio (.ogg) sends as voice bubbles, and videos (.mp4) play inline. You can also include image URLs in markdown format ![alt](url) and they will be sent as native photos.",
                 "commands": {
                     # Telegram Bot API style commands only: `$new` is NOT a
                     # command here because this plugin declares what it accepts.
