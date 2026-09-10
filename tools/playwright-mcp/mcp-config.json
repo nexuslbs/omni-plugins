@@ -1,7 +1,7 @@
 {
   "servers": [
     {
-      "name": "playwright",
+      "name": "mcp-playwright",
       "transport": "stdio",
       "command": "docker",
       "args": [
