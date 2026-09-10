@@ -16,7 +16,7 @@ Inbound: when polling_enabled is true a background thread long-polls
 getUpdates (offset-based) and emits `inbound_message` notifications to
 stdout, exactly like the mattermost platform does.
 
-Config flag `first_last_only` (boolean, default false): telegram-specific
+Config flag `first_last_only` (boolean, default true): telegram-specific
 delivery collapse implemented INSIDE this plugin. When true, the plugin
 delivers only the thread's FIRST message (seq-0, the prompt/cause) and the
 FINAL message of the run; every intermediate delivery is suppressed (the
@@ -76,8 +76,11 @@ class TelegramPlatform:
         self.api_base_url = DEFAULT_API_BASE
         self.polling_enabled = False
         self.poll_interval_secs = 5
-        self.parent_by_chat = False
-        self.first_last_only = False
+        # Schema defaults (plugin.json) are true: the messaging platform must
+        # work out of the box. An explicit false in plugins.yml (an unchecked
+        # dashboard box) still disables each flag.
+        self.parent_by_chat = True
+        self.first_last_only = True
         self._offset = None
         self._poll_thread = None
         self._stop = threading.Event()
@@ -168,8 +171,10 @@ class TelegramPlatform:
             self.poll_interval_secs = max(1, min(300, interval))
         except (TypeError, ValueError):
             self.poll_interval_secs = 5
-        self.parent_by_chat = _as_bool(config.get("parent_by_chat", False))
-        self.first_last_only = _as_bool(config.get("first_last_only", False))
+        # Absent key -> the schema default (plugin.json) is true.
+        self.parent_by_chat = _as_bool(config.get("parent_by_chat", True))
+        # Absent key -> the schema default (plugin.json) is true.
+        self.first_last_only = _as_bool(config.get("first_last_only", True))
         self._configured = True
         if self.polling_enabled and not self.bot_token:
             # Loud, never silent: this is the production failure mode where a
@@ -542,8 +547,8 @@ class TelegramPlatform:
             # (the same envelope key the mattermost platform uses for its thread
             # root) - the existing pending/merge machinery then merges a pending
             # same-parent message into a processing thread per its percent /
-            # char-amount thresholds. When parent_by_chat is false (default) no
-            # parent id is set: identical to current behavior.
+            # char-amount thresholds. When parent_by_chat is false no
+            # parent id is set (one thread per message).
             metadata["root_id"] = str(chat_id)
         self._write_json({
             "method": "inbound_message",

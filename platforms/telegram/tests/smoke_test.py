@@ -14,7 +14,7 @@ Covers:
   * typing            -> sendChatAction(action=typing) hits the mock
   * inbound           -> injected getUpdates flow back as inbound_message
                          notifications on stdout
-  * parent_by_chat    -> config false (default): no parent external id;
+  * parent_by_chat    -> config true (default): chat id as parent external id;
                          config true: inbound messages carry the chat id as
                          metadata["root_id"] (the envelope key omniagent
                          reads as the parent external id)
@@ -528,7 +528,7 @@ def main():
               "mock stored sendChatAction(typing) for correct chat")
 
         # 7. inbound: inject a getUpdates payload -> inbound_message
-        #    (parent_by_chat defaults to false -> NO parent external id)
+        #    (parent_by_chat defaults to true -> chat id as parent external id)
         http_post(base + "/admin/inject", {
             "update_id": 9001,
             "message": {
@@ -545,9 +545,8 @@ def main():
               and p.get("text") == "inbound hello from telegram"
               and p.get("external_id") == "777",
               "inbound_message notification carries chat/text/external_id")
-        check("parent_external_id" not in p
-              and "root_id" not in p.get("metadata", {}),
-              "default config (parent_by_chat=false): no parent external id")
+        check(p.get("metadata", {}).get("root_id") == "-1002003004",
+              "default config (parent_by_chat defaults to true): metadata[root_id] = chat id")
 
         # 7b. parent_by_chat=true: inbound messages carry the chat id as the
         #     parent external id - delivered via metadata["root_id"], the
@@ -672,7 +671,7 @@ def main():
 
         # 11. first_last_only config flag round-trip: the flag is parsed from
         #     both the nested "config" dict and the FLAT core protocol map
-        #     (string values), defaults to false when absent, and is echoed
+        #     (string values), defaults to true when absent, and is echoed
         #     back in the configure result so the core can rely on it.
         plat.stop()
         plat = PlatformProc()
@@ -712,14 +711,14 @@ def main():
         }})
         res = r.get("result", {})
         check(res.get("configured") is True
-              and res.get("first_last_only") is False,
-              "configure (flag absent) -> first_last_only defaults to false")
+              and res.get("first_last_only") is True,
+              "configure (flag absent) -> first_last_only defaults to true")
 
         # 12. first_last_only collapse (plugin-scoped): with the flag on, only
         #     the thread's FIRST message (seq-0) and the FINAL message
         #     (is_final=true) reach the chat; intermediate deliveries are
         #     suppressed without any Telegram API call. With the flag off
-        #     (default) every delivery is sent - core sends the full stream.
+        #     every delivery is sent - core sends the full stream.
         r = plat.call("configure", {"config": {
             "bot_token": MOCK_TOKEN,
             "api_base_url": base,
