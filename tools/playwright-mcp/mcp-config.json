@@ -1,0 +1,24 @@
+{
+  "servers": [
+    {
+      "name": "playwright",
+      "transport": "stdio",
+      "command": "docker",
+      "args": [
+        "run", "-i", "--rm", "--init",
+        "mcr.microsoft.com/playwright/mcp",
+        "--headless",
+        "--browser", "chromium",
+        "--no-sandbox",
+        "--isolated",
+        "--timeout-action=10000",
+        "--timeout-navigation=30000"
+      ],
+      "env": {},
+      "timeout_secs": 120,
+      "max_retries": 1,
+      "pool_size": 1,
+      "allowed_tools": ["*"]
+    }
+  ]
+}

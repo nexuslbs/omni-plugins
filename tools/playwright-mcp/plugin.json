@@ -1,0 +1,7 @@
+{
+  "name": "playwright-mcp",
+  "version": "0.1.0",
+  "type": "mcp",
+  "description": "Playwright MCP (microsoft/playwright-mcp) as an external MCP server: headless Chromium browser automation driven by the page accessibility tree. Runs the official mcr.microsoft.com/playwright/mcp container over stdio through the docker CLI available inside the omniagent container. Action (10s) and navigation (30s) timeouts are bounded so a hung page cannot stall a thread. Use fetch/curl/web_extract first; reach for the browser only for JavaScript-rendered pages, forms, auth/session flows.",
+  "config_schema": []
+}
