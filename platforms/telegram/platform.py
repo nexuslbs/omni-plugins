@@ -547,12 +547,16 @@ class TelegramPlatform:
             # Deliver the chat id as the parent external id (the SAME value for
             # every message from this chat), so threads created from messages in
             # this chat always share one parent. omniagent reads
-            # metadata["root_id"] as the parent external id for inbound messages
-            # (the same envelope key the mattermost platform uses for its thread
-            # root) - the existing pending/merge machinery then merges a pending
-            # same-parent message into a processing thread per its percent /
-            # char-amount thresholds. When parent_by_chat is false no
-            # parent id is set (one thread per message).
+            # metadata["parent_external_id"] as the protocol-level parent
+            # external id for inbound messages (the same envelope key the
+            # mattermost platform uses for its thread root post id) - the
+            # existing pending/merge machinery then merges a pending same-parent
+            # message into a processing thread per its percent / char-amount
+            # thresholds. metadata["root_id"] carries the same value as a
+            # one-release compatibility alias for omniagent cores that predate
+            # the rename. When parent_by_chat is false no parent id is set (one
+            # thread per message).
+            metadata["parent_external_id"] = str(chat_id)
             metadata["root_id"] = str(chat_id)
         self._write_json({
             "method": "inbound_message",

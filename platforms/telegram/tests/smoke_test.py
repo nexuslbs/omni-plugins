@@ -16,7 +16,7 @@ Covers:
                          notifications on stdout
   * parent_by_chat    -> config true (default): chat id as parent external id;
                          config true: inbound messages carry the chat id as
-                         metadata["root_id"] (the envelope key omniagent
+                         metadata["parent_external_id"] (the envelope key omniagent
                          reads as the parent external id)
   * flat configure    -> configure with FLAT params (no "config" key),
                          exactly like the real core sends (string values):
@@ -544,13 +544,15 @@ def main():
               and p.get("text") == "inbound hello from telegram"
               and p.get("external_id") == "777",
               "inbound_message notification carries chat/text/external_id")
-        check(p.get("metadata", {}).get("root_id") == "-1002003004",
-              "default config (parent_by_chat defaults to true): metadata[root_id] = chat id")
+        check(p.get("metadata", {}).get("parent_external_id") == "-1002003004",
+              "default config (parent_by_chat defaults to true): "
+              "metadata[parent_external_id] = chat id")
 
         # 7b. parent_by_chat=true: inbound messages carry the chat id as the
-        #     parent external id - delivered via metadata["root_id"], the
-        #     envelope key omniagent reads as parent_external_id (same value
-        #     for every message from the same chat).
+        #     parent external id - delivered via metadata["parent_external_id"],
+        #     the neutral envelope key omniagent reads (same value for every
+        #     message from the same chat; metadata["root_id"] carries the same
+        #     value as a one-release alias for older cores).
         r = plat.call("configure", {"config": {
             "bot_token": MOCK_TOKEN,
             "api_base_url": base,
@@ -575,9 +577,11 @@ def main():
         check(p.get("resource_identifier") == "-1002003004"
               and p.get("external_id") == "778",
               "parent_by_chat=true: inbound message carries chat/text/external_id")
-        check(p.get("metadata", {}).get("root_id") == "-1002003004",
-              "parent_by_chat=true: parent external id = chat id "
-              "(same value for all messages from the chat)")
+        check(p.get("metadata", {}).get("parent_external_id") == "-1002003004"
+              and p.get("metadata", {}).get("root_id") == "-1002003004",
+              "parent_by_chat=true: parent external id = chat id under the "
+              "neutral key (same value for all messages from the chat), and the "
+              "one-release root_id alias carries the same value")
 
         # 7c. toggle back to false: parent external id disappears again
         r = plat.call("configure", {"config": {

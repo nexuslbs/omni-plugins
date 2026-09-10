@@ -36,7 +36,7 @@ A Python implementation of the omniagent **telegram platform plugin**
 | `api_base_url` | string | `https://api.telegram.org` | Override to point at the mock for tests |
 | `polling_enabled` | boolean | `true` | Enable inbound getUpdates long-polling |
 | `poll_interval_secs` | integer | `5` | getUpdates long-poll timeout + loop cadence |
-| `parent_by_chat` | boolean | `true` | When `true` (default), every inbound user message carries the chat id as the **parent external id** (delivered via `metadata["root_id"]`, the envelope key omniagent reads as `parent_external_id`), so threads created from the same chat always share one parent and pending messages from that chat merge into a processing thread via omniagent's existing pending/sub-prompt machinery. Set to `false` to disable parent ids (each message creates its own thread). |
+| `parent_by_chat` | boolean | `true` | When `true` (default), every inbound user message carries the chat id as the **parent external id** (delivered via `metadata["parent_external_id"]`, the neutral envelope key omniagent reads (`metadata["root_id"]` carries the same value as a one-release alias for older cores)), so threads created from the same chat always share one parent and pending messages from that chat merge into a processing thread via omniagent's existing pending/sub-prompt machinery. Set to `false` to disable parent ids (each message creates its own thread). |
 | `first_last_only` | boolean | `true` | When `true` (default), only the FIRST and LAST messages of a thread run are delivered to the chat; intermediate messages are collapsed (suppressed). Set to `false` to deliver every thread message. |
 
 ## Testing without a real token (default)
