@@ -16,6 +16,9 @@ tools:
   hindsight:
     url: https://github.com/nexuslbs/omni-plugins.git
     path: tools/hindsight
+  llm-response-hygiene:
+    url: https://github.com/nexuslbs/omni-plugins.git
+    path: tools/llm-response-hygiene
   memory:
     url: https://github.com/nexuslbs/omni-plugins.git
     path: tools/memory
