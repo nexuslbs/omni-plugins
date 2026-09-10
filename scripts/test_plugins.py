@@ -619,6 +619,50 @@ def test_stdio_platforms_robustness():
             stop_proc(proc)
 
 
+# X6 (external plan section 7): the timeout/hang/failure/parallel/cleanup cases
+# for the NEW external tools (himalaya, mcp-playwright, totp, deferred SMS) live
+# in the omni-deployer harness so this plugin suite and the deploy suite
+# (scripts/tests.py GROUP 55) run the IDENTICAL cases. The harness is
+# bind-mounted in the dev/CI stack; when it is absent (plugin-only checkout) the
+# case is recorded as a documented skip, like the unstartable MCP servers above.
+X6_HARNESS = os.environ.get(
+    "X6_HARNESS", "/opt/workspace/omni-deployer/scripts/x6_robustness.py")
+
+# Prerequisite markers: when the harness cannot run at all because the dev
+# toolbox / playwright plugin is missing in this environment, the case is a
+# documented skip. Any other non-zero harness result is a real defect.
+X6_ENV_MARKERS = ("not installed", "not present", "no such file",
+                  "command not found", "SKIP:", "no such container", "not found")
+
+
+def test_external_tool_robustness():
+    """External-tool robustness (external plan section 7 X6, code plan 6.2-6.4):
+    one timeout/hang/failure/parallel/cleanup case per NEW external tool of the
+    plan - himalaya (X1 email), mcp-playwright (X4/X5 web), oathtool/pyotp (X3
+    TOTP) and the deferred SMS backend (X2, the deferral itself is asserted).
+    Drives the shared omni-deployer harness (scripts/x6_robustness.py, also
+    wired as scripts/tests.py GROUP 55) in a subprocess with a hard bound, so a
+    wedged external tool can never hang this suite. SKIPs when the harness or
+    its environment prerequisites are unavailable; any other failure is real."""
+    if not os.path.exists(X6_HARNESS):
+        raise SkipTest(f"X6 harness not present ({X6_HARNESS})")
+    env = dict(os.environ, OMNI_BASE=BASE)
+    r = subprocess.run([sys.executable, "-u", X6_HARNESS], env=env,
+                       capture_output=True, text=True, timeout=420)
+    out = (r.stdout or "") + (r.stderr or "")
+    tail = [l for l in out.splitlines() if l.strip()][-4:]
+    print("\n".join("    " + l for l in tail))
+    if r.returncode != 0:
+        low = out.lower()
+        if any(m.lower() in low for m in X6_ENV_MARKERS):
+            raise SkipTest("X6 harness prerequisites unavailable in this "
+                           "environment: " + (tail[-1] if tail else "no output"))
+        raise AssertionError("X6 external-tool robustness FAILED (rc=%s): %s"
+                             % (r.returncode, tail[-1] if tail else "no output"))
+    assert "check(s) passed" in out, f"unexpected X6 harness output: {tail}"
+    print("    X6 harness ran to completion (all cases green)")
+
+
 test(test_registry_completeness)
 test(test_tool_plugins)
 test(test_noop_full_provider)
@@ -627,6 +671,7 @@ test(test_platforms_registered)
 test(test_telegram_platform_mock)
 test(test_stdio_platforms)
 test(test_stdio_platforms_robustness)
+test(test_external_tool_robustness)
 
 print(f"\n{'=' * 60}")
 print(f"  RESULTS: {tests_pass} passed, {tests_fail} failed, {len(skips)} skipped "
