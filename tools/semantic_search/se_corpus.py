@@ -72,6 +72,9 @@ def chunk_markdown(text, max_chars=1200, overlap=200, source_path="", start_line
     max_chars is further split on newline boundaries with `overlap` characters
     of carry-over so a sentence spanning the split is still retrievable.
     Returns a list of dicts: {path, heading, line_start, line_end, text, hash}.
+
+    Every emitted chunk is at most max_chars characters, so a single huge
+    section can never blow up the process memory of the caller.
     """
     body, skipped = split_frontmatter(text)
     lines = body.split("\n")
@@ -95,6 +98,7 @@ def chunk_markdown(text, max_chars=1200, overlap=200, source_path="", start_line
     buf = []
     buf_first = None
     buf_last = None
+    buf_chars = 0
     heading = ""
     for idx, line in enumerate(lines):
         line_no = base_line + idx
@@ -104,7 +108,7 @@ def chunk_markdown(text, max_chars=1200, overlap=200, source_path="", start_line
             # as standalone chunks).
             if buf:
                 _emit(buf, heading, buf_first, buf_last, max_chars, overlap, flush)
-                buf, buf_first = [], None
+                buf, buf_first, buf_chars = [], None, 0
             level = len(match.group(1))
             title = match.group(2).strip()
             breadcrumb = breadcrumb[:level - 1]
@@ -115,9 +119,10 @@ def chunk_markdown(text, max_chars=1200, overlap=200, source_path="", start_line
             buf_first = line_no
         buf.append(line)
         buf_last = line_no
-        if sum(len(x) + 1 for x in buf) > max_chars * 2:
+        buf_chars += len(line) + 1
+        if buf_chars > max_chars * 2:
             _emit(buf, heading, buf_first, buf_last, max_chars, overlap, flush)
-            buf, buf_first = [], None
+            buf, buf_first, buf_chars = [], None, 0
     if buf:
         _emit(buf, heading, buf_first, buf_last, max_chars, overlap, flush)
     return chunks
@@ -145,7 +150,14 @@ def _emit(buf, heading, first_line, last_line, max_chars, overlap, flush):
         flush(piece.split("\n"), heading, piece_first, piece_last)
         if end >= len(text):
             break
-        start = max(0, end - overlap)
+        # Guarantee forward progress: when the overlap window would land at or
+        # before the current start (short first line), jump past `end`
+        # instead of re-emitting the same piece forever (this was an unbounded
+        # loop that OOM-killed the indexer on large sections).
+        next_start = end - overlap
+        start = end if next_start <= start else next_start
+        if start > len(text) - 1:
+            break
 
 
 def resolve_roots(roots, profile=None, omni_dir=None):
