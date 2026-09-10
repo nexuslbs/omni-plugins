@@ -1,0 +1,19 @@
+{
+  "servers": [
+    {
+      "name": "semantic_search",
+      "transport": "stdio",
+      "command": "python3",
+      "args": ["server.py"],
+      "env": {
+        "OMNI_DIR": "$env:OMNI_DIR",
+        "QDRANT_URL": "$env:QDRANT_URL",
+        "QDRANT_API_KEY": "$env:QDRANT_API_KEY"
+      },
+      "timeout_secs": 900,
+      "max_retries": 1,
+      "pool_size": 2,
+      "allowed_tools": ["*"]
+    }
+  ]
+}

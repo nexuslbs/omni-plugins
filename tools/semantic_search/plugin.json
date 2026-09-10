@@ -1,0 +1,92 @@
+{
+  "name": "semantic_search",
+  "version": "0.1.0",
+  "type": "mcp",
+  "description": "Local semantic search over the profile wiki, backed by Qdrant. The plugin computes embeddings itself with a LOCAL vectorizer (feature-hashing by default, optional in-process fastembed/ONNX model) - no LLM and no embedding API is ever called. Provides semantic_search (ranked hits with provenance) and semantic_search_index (idempotent corpus index build).",
+  "config_schema": [
+    {
+      "key": "qdrant_url",
+      "label": "Qdrant URL",
+      "type": "string",
+      "default": "$env:QDRANT_URL",
+      "description": "Base URL of the Qdrant HTTP API (e.g. http://qdrant:6333). Defaults to the QDRANT_URL environment variable."
+    },
+    {
+      "key": "qdrant_api_key",
+      "label": "Qdrant API Key",
+      "type": "string",
+      "default": "$env:QDRANT_API_KEY",
+      "description": "Optional Qdrant API key (sent as the api-key header). Leave empty for an unauthenticated local Qdrant."
+    },
+    {
+      "key": "collection",
+      "label": "Collection",
+      "type": "string",
+      "default": "wiki_semantic",
+      "description": "Qdrant collection name holding the wiki chunks."
+    },
+    {
+      "key": "corpus_roots",
+      "label": "Corpus Roots",
+      "type": "string",
+      "default": "profiles/{profile}/wiki",
+      "description": "Comma-separated corpus roots, absolute or relative to OMNI_DIR. The placeholder {profile} resolves to the asking profile."
+    },
+    {
+      "key": "corpus_globs",
+      "label": "Corpus Globs",
+      "type": "string",
+      "default": "**/*.md",
+      "description": "Comma-separated glob patterns matched inside every corpus root."
+    },
+    {
+      "key": "embedding_backend",
+      "label": "Embedding Backend",
+      "type": "string",
+      "default": "hash",
+      "description": "LOCAL embedding backend: 'hash' (deterministic stdlib feature hashing, 384 dims, zero downloads) or 'fastembed' (in-process ONNX model, requires the fastembed package)."
+    },
+    {
+      "key": "embedding_model",
+      "label": "Embedding Model",
+      "type": "string",
+      "default": "BAAI/bge-small-en-v1.5",
+      "description": "Model name for the fastembed backend (ignored by the hash backend). 384 dimensions."
+    },
+    {
+      "key": "chunk_size",
+      "label": "Chunk Size (chars)",
+      "type": "integer",
+      "default": 1200,
+      "description": "Maximum characters per indexed markdown chunk."
+    },
+    {
+      "key": "chunk_overlap",
+      "label": "Chunk Overlap (chars)",
+      "type": "integer",
+      "default": 200,
+      "description": "Character overlap between consecutive chunks of the same section."
+    },
+    {
+      "key": "batch_size",
+      "label": "Batch Size",
+      "type": "integer",
+      "default": 64,
+      "description": "Number of points per Qdrant upsert batch."
+    },
+    {
+      "key": "timeout_secs",
+      "label": "HTTP Timeout (s)",
+      "type": "integer",
+      "default": 20,
+      "description": "Qdrant HTTP timeout in seconds."
+    },
+    {
+      "key": "default_limit",
+      "label": "Default Result Limit",
+      "type": "integer",
+      "default": 10,
+      "description": "Default number of hits returned by semantic_search."
+    }
+  ]
+}

@@ -15,6 +15,8 @@ This repository is the source for **remote plugins** (installed via
 | `platforms/` | Platform plugins (e.g. `telegram`, plus `test-*` reference implementations) |
 | `tools/` | MCP tool plugins (e.g. `prompt`, `hindsight`, `memory`, `actions`, `paperclip`, plus `test-*`/`cron-*`/`cosmos-*` reference tools) |
 | `remote.yml` / `remote.test.yml` | Remote plugin source lists used by the omni-deployer integration tests |
+| `tools/semantic_search` | Wiki **semantic search** MCP tool: Qdrant backend + a LOCAL vectorizer (no LLM/embedding API), opt-in via the `qdrant` compose profile |
+
 
 ## Structure of a plugin
 

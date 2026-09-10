@@ -1,0 +1,14 @@
+# semantic_search MCP plugin - dependencies
+#
+# The default configuration needs NOTHING beyond the Python standard library:
+# the "hash" embedding backend is a deterministic local feature-hashing
+# vectorizer and the Qdrant client is a plain urllib REST client.
+#
+# The optional "fastembed" backend (embedding_backend: fastembed) runs a local
+# ONNX sentence-embedding model in-process. It is fully local (no API calls)
+# but needs the extra package + a ~90 MB model download on first use, so it is
+# deliberately NOT a hard requirement here - install it only when enabling
+# that backend:
+#
+#   fastembed>=0.4,<1
+#

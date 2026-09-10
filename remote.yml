@@ -28,6 +28,9 @@ tools:
   prompt:
     url: https://github.com/nexuslbs/omni-plugins.git
     path: tools/prompt
+  semantic_search:
+    url: https://github.com/nexuslbs/omni-plugins.git
+    path: tools/semantic_search
   test-js-tool:
     url: https://github.com/nexuslbs/omni-plugins.git
     path: tools/test-js-tool
