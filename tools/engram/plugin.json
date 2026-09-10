@@ -1,0 +1,28 @@
+{
+  "name": "engram",
+  "version": "1.20.0",
+  "type": "mcp",
+  "description": "Engram (Gentleman-Programming/engram) as a remote BINARY plugin: a single self-contained Go binary (SQLite + FTS5) exposing an MCP stdio server. There is no source build - the plugin INSTALL action downloads the prebuilt artifact published on GitHub Releases for the running platform, verifies its SHA-256, places it (executable) in the plugin directory, and the entrypoint starts the MCP server from it. Use for persistent cross-session memory (mem_save / mem_search / mem_context).",
+  "entrypoint": {
+    "command": "engram",
+    "args": ["mcp"],
+    "transport": "stdio"
+  },
+  "binary": {
+    "url": "https://github.com/Gentleman-Programming/engram/releases/download/v{version}/engram_{version}_{os}_{goarch}.tar.gz",
+    "version": "1.20.0",
+    "file": "engram",
+    "member": "engram",
+    "format": "tar.gz",
+    "checksums": {
+      "linux-x86_64": "sha256:7dc3003318e303bee269a4772144f3ce01c8ec700bfd524aaec76770acd389ca",
+      "linux-aarch64": "sha256:7eb815910a76ae6cfa9a5d0161d3701e293dcca71f7743cffa62e236e5af59af",
+      "darwin-x86_64": "sha256:3b9015dcfcdd9f823eb7ad0b590b1dbc4c25bb5d81dda3f84e623709815afe80",
+      "darwin-aarch64": "sha256:2363d5012f23e58878f86c3ddcc1f63cfe9dcf3eec7f413e70eaafcbb9d394cc"
+    },
+    "assets": {
+      "windows-x86_64": "https://github.com/Gentleman-Programming/engram/releases/download/v1.20.0/engram_1.20.0_windows_amd64.zip"
+    }
+  },
+  "config_schema": []
+}
