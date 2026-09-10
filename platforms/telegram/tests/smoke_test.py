@@ -364,25 +364,25 @@ def main():
         r = plat.call("react", {
             "resource_identifier": "123456789",
             "external_id": ext2,
-            "emoji": "\U0001f44d",
-        })
+            "status": "processing",
+            })
         check(r.get("result", {}).get("reacted") is True,
               "react -> reacted:true")
         reactions = http_get(base + "/admin/reactions").get("reactions", [])
         check(reactions and str(reactions[-1]["message_id"]) == str(ext2),
               "mock stored setMessageReaction")
 
-        # 6b. shortcode mapping: ":handshake:" -> the unicode handshake emoji.
-        #     The handshake is reacted on the SAME message that already holds
-        #     the thumbs-up, and it must REPLACE it (override): the stored set
-        #     has exactly one emoji and it is the handshake, never both.
+        # 6b. status-name mapping (ARCHITECTURE 2026-09-10): the CORE sends the
+        #     raw thread STATUS name; THIS plugin maps it to the unicode emoji
+        #     Telegram accepts. "merged" is reacted on the SAME message that
+        #     already holds the thumbs-up and must REPLACE it.
         r = plat.call("react", {
             "resource_identifier": "123456789",
             "external_id": ext2,
-            "emoji": ":handshake:",
+            "status": "merged",
         })
         check(r.get("result", {}).get("reacted") is True,
-              "react shortcode -> reacted:true")
+              "react status=merged -> reacted:true")
         reactions = http_get(base + "/admin/reactions").get("reactions", [])
         # json.dumps uses ensure_ascii by default, so the emoji arrives in
         # escaped surrogate form; parse the stored reaction JSON to compare.
@@ -390,133 +390,132 @@ def main():
             reactions
             and [e["emoji"] for e in json.loads(reactions[-1]["reaction"])]
             == ["\U0001f91d"],
-            "terminal reaction REPLACES start reaction on the same message "
+            "merged status REPLACES start reaction on the same message "
             "(stored set = [handshake] only)",
         )
 
-        # 6b2. FULL LIFECYCLE override: ":+1:" (processing) maps to the
-        #      unicode thumbs-up; a terminal reaction on the SAME message
-        #      (":white_check_mark:" completed / ":broken_heart:" interrupted)
-        #      REPLACES it - the old +1 must be GONE and the stored set must
-        #      hold ONLY the terminal emoji (never accumulated).
-        r = plat.call("deliver", {
-            "resource_identifier": "123456789",
-            "content": "React target 2",
-        })
-        ext3 = r.get("result", {}).get("external_id")
-        r = plat.call("react", {
-            "resource_identifier": "123456789",
-            "external_id": ext3,
-            "emoji": ":+1:",
-        })
-        check(r.get("result", {}).get("reacted") is True,
-              "react :+1: shortcode -> reacted:true")
-        reactions = http_get(base + "/admin/reactions").get("reactions", [])
-        check(
-            reactions
-            and json.loads(reactions[-1]["reaction"])[0]["emoji"] == "\U0001f44d",
-            ":+1: shortcode mapped to unicode thumbs-up",
-        )
-        # completed -> the same message now shows ONLY the check mark
-        r = plat.call("react", {
-            "resource_identifier": "123456789",
-            "external_id": ext3,
-            "emoji": ":white_check_mark:",
-        })
-        check(r.get("result", {}).get("reacted") is True,
-              "react :white_check_mark: -> reacted:true")
-        reactions = http_get(base + "/admin/reactions").get("reactions", [])
-        check(
-            reactions
-            and [e["emoji"] for e in json.loads(reactions[-1]["reaction"])]
-            == ["\u2705"],
-            "completed: +1 REPLACED by check mark on the same message "
-            "(stored set = [check] only, no thumbs_up)",
-        )
-        # interrupted -> a broken heart replaces the check mark
-        r = plat.call("react", {
-            "resource_identifier": "123456789",
-            "external_id": ext3,
-            "emoji": ":broken_heart:",
-        })
-        check(r.get("result", {}).get("reacted") is True,
-              "react :broken_heart: -> reacted:true")
-        reactions = http_get(base + "/admin/reactions").get("reactions", [])
-        check(
-            reactions
-            and [e["emoji"] for e in json.loads(reactions[-1]["reaction"])]
-            == ["\U0001f494"],
-            "interrupted: prior reaction REPLACED by broken heart "
-            "(stored set = [broken_heart] only)",
-        )
-
-        # 6b3. every terminal status shortcode the core sends maps to a valid
-        #      unicode emoji; each is reacted on a FRESH message and the stored
-        #      reaction JSON carries the mapped glyph.
-        status_codes = [
-            (":white_check_mark:", "\u2705"),
-            (":x:", "\u274c"),
-            (":broken_heart:", "\U0001f494"),
-            (":o:", "\U0001f17e\ufe0f"),
-            (":handshake:", "\U0001f91d"),
-        ]
-        for shortcode, expected in status_codes:
+        # 6b2. FULL LIFECYCLE override by STATUS name: "processing" maps to the
+        #      thumbs-up; every terminal status REPLACES it on the SAME message
+        #      - the old +1 must be GONE and the stored set must hold ONLY the
+        #      new terminal emoji (never accumulated).
+        for status, expected in [
+            ("processing", "\U0001f44d"),
+            ("completed", "\u2705"),
+            ("interrupted", "\U0001f494"),
+            ("failed", "\u274c"),
+            ("skipped", "\U0001f17e\ufe0f"),
+            ("merged", "\U0001f91d"),
+        ]:
             r = plat.call("deliver", {
                 "resource_identifier": "123456789",
-                "content": "Status react " + shortcode,
+                "content": "Status lifecycle " + status,
             })
             ext_s = r.get("result", {}).get("external_id")
             r = plat.call("react", {
                 "resource_identifier": "123456789",
                 "external_id": ext_s,
-                "emoji": shortcode,
+                "status": "processing",
             })
             check(r.get("result", {}).get("reacted") is True,
-                  "react " + shortcode + " -> reacted:true")
-            reactions = http_get(base + "/admin/reactions").get("reactions", [])
-            check(
-                reactions
-                and json.loads(reactions[-1]["reaction"])[-1]["emoji"] == expected,
-                shortcode + " mapped to " + expected + " in setMessageReaction",
-            )
-
-        # 6b4. ":thumbsup:" and ":thumbs_up:" aliases map to the same thumbs-up
-        #      glyph as ":+1:".
-        for alias in (":thumbsup:", ":thumbs_up:"):
-            r = plat.call("deliver", {
-                "resource_identifier": "123456789",
-                "content": "Alias react " + alias,
-            })
-            ext_a = r.get("result", {}).get("external_id")
-            r = plat.call("react", {
-                "resource_identifier": "123456789",
-                "external_id": ext_a,
-                "emoji": alias,
-            })
-            check(r.get("result", {}).get("reacted") is True,
-                  "react " + alias + " -> reacted:true")
+                  "react status=processing -> reacted:true")
             reactions = http_get(base + "/admin/reactions").get("reactions", [])
             check(
                 reactions
                 and json.loads(reactions[-1]["reaction"])[-1]["emoji"]
                 == "\U0001f44d",
-                alias + " mapped to thumbs-up",
+                "processing -> thumbs-up on the message",
+            )
+            r = plat.call("react", {
+                "resource_identifier": "123456789",
+                "external_id": ext_s,
+                "status": status,
+            })
+            check(r.get("result", {}).get("reacted") is True,
+                  "react status=" + status + " -> reacted:true")
+            reactions = http_get(base + "/admin/reactions").get("reactions", [])
+            check(
+                reactions
+                and [e["emoji"] for e in json.loads(reactions[-1]["reaction"])]
+                == [expected],
+                status + ": prior reaction REPLACED on the same message "
+                "(stored set = [" + status + "] only)",
             )
 
-        # 6b5. unknown shortcode -> reacted:false and NO setMessageReaction
-        #      call: an invalid emoji string must never reach the API.
-        before = len(http_get(base + "/admin/reactions").get("reactions", []))
+        # 6b3. DEFAULT fallback: a status with NO explicit mapping (a NEW thread
+        #      status added later) MUST still react with the plugin default -
+        #      never silence, never an error.
+        r = plat.call("deliver", {
+            "resource_identifier": "123456789",
+            "content": "Default react target",
+        })
+        ext_d = r.get("result", {}).get("external_id")
         r = plat.call("react", {
             "resource_identifier": "123456789",
-            "external_id": ext3,
-            "emoji": ":not_a_real_emoji:",
+            "external_id": ext_d,
+            "status": "some_future_status",
         })
-        check(r.get("result", {}).get("reacted") is False,
-              "react unknown shortcode -> reacted:false")
-        after = len(http_get(base + "/admin/reactions").get("reactions", []))
-        check(after == before,
-              "unknown shortcode -> no setMessageReaction call "
-              "(no invalid emoji sent)")
+        check(r.get("result", {}).get("reacted") is True,
+              "react unknown status -> reacted:true (default fallback)")
+        reactions = http_get(base + "/admin/reactions").get("reactions", [])
+        check(
+            reactions
+            and [e["emoji"] for e in json.loads(reactions[-1]["reaction"])]
+            == ["\U0001f440"],
+            "unknown status -> plugin DEFAULT reaction, not silence",
+        )
+
+        # 6b4. legacy rollout window: an OLDER core still sends Mattermost
+        #      shortcodes in `emoji`; they keep working.
+        for shortcode, expected in [
+            (":+1:", "\U0001f44d"),
+            (":white_check_mark:", "\u2705"),
+            (":x:", "\u274c"),
+            (":broken_heart:", "\U0001f494"),
+            (":o:", "\U0001f17e\ufe0f"),
+            (":handshake:", "\U0001f91d"),
+            (":thumbsup:", "\U0001f44d"),
+        ]:
+            r = plat.call("deliver", {
+                "resource_identifier": "123456789",
+                "content": "Legacy react " + shortcode,
+            })
+            ext_l = r.get("result", {}).get("external_id")
+            r = plat.call("react", {
+                "resource_identifier": "123456789",
+                "external_id": ext_l,
+                "emoji": shortcode,
+            })
+            check(r.get("result", {}).get("reacted") is True,
+                  "legacy " + shortcode + " -> reacted:true")
+            reactions = http_get(base + "/admin/reactions").get("reactions", [])
+            check(
+                reactions
+                and json.loads(reactions[-1]["reaction"])[-1]["emoji"] == expected,
+                "legacy " + shortcode + " mapped to " + expected,
+            )
+
+        # 6b5. the new `status` field WINS over the legacy `emoji` field when
+        #      both are present (a new core carrying an old-style fallback).
+        r = plat.call("deliver", {
+            "resource_identifier": "123456789",
+            "content": "Precedence target",
+        })
+        ext_p = r.get("result", {}).get("external_id")
+        r = plat.call("react", {
+            "resource_identifier": "123456789",
+            "external_id": ext_p,
+            "status": "completed",
+            "emoji": ":handshake:",
+        })
+        check(r.get("result", {}).get("reacted") is True,
+              "status+emoji -> reacted:true")
+        reactions = http_get(base + "/admin/reactions").get("reactions", [])
+        check(
+            reactions
+            and [e["emoji"] for e in json.loads(reactions[-1]["reaction"])]
+            == ["\u2705"],
+            "status field takes precedence over the legacy emoji field",
+        )
 
         # 6c. typing -> sendChatAction (action=typing)
         r = plat.call("typing", {"resource_identifier": "123456789"})

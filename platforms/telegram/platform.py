@@ -421,19 +421,23 @@ class TelegramPlatform:
     def handle_react(self, req_id, params):
         resource = params.get("resource_identifier", "")
         external_id = params.get("external_id", "")
-        raw = params.get("emoji", "")
-        # Map Mattermost-style shortcodes to the unicode emoji the Telegram
-        # Bot API requires; unknown shortcodes are logged and skipped (never
-        # sent as a garbage glyph that Telegram would reject).
-        emoji = SHORTCODE_TO_EMOJI.get(raw, raw.strip(":"))
-        if raw.startswith(":") and raw.endswith(":") \
-                and raw not in SHORTCODE_TO_EMOJI:
-            log.warning("Unknown reaction shortcode %r - not reacting", raw)
-            self._respond(req_id, result={"reacted": False})
-            return
-        if not emoji:
-            self._respond(req_id, result={"reacted": False})
-            return
+        # The core sends the RAW thread STATUS name ("processing", "completed",
+        # "failed", "interrupted", "skipped", "merged", ...); THIS plugin owns
+        # the status -> reaction mapping. `emoji` is the legacy field an older
+        # core still sends (Mattermost-style shortcode) and is honored during
+        # the rollout window only.
+        status = (params.get("status") or "").strip()
+        raw = status if status else (params.get("emoji") or "").strip()
+        # A status with no explicit mapping (e.g. a NEW thread status added
+        # later) MUST still get a reaction: fall back to the plugin default
+        # instead of dropping the reaction, logging only, or erroring.
+        emoji = STATUS_TO_EMOJI.get(raw) or SHORTCODE_TO_EMOJI.get(raw)
+        if emoji is None:
+            emoji = DEFAULT_EMOJI
+            log.info(
+                "No explicit reaction mapping for status %r - using default %s",
+                raw, emoji,
+            )
         chat_id = self._chat_id(resource)
         # OVERRIDE semantics (2026-09-04): a status transition REPLACES the
         # bot's previous reaction on the SAME message instead of accumulating
@@ -627,9 +631,31 @@ class TelegramPlatform:
         log.info("Telegram platform plugin shutting down (stdin closed)")
 
 
-# Mattermost-style emoji shortcodes used by the core for status reactions
-# (e.g. ":o:", ":handshake:") are not valid Telegram emoji. Map the known
-# ones to their unicode glyphs before calling setMessageReaction.
+# Thread STATUS name -> Telegram unicode emoji.
+#
+# ARCHITECTURE (2026-09-10): the core sends the RAW thread STATUS name
+# ("processing", "completed", "skipped", "merged", ...) in the reaction
+# envelope and never maps it to an emoji or to a Mattermost shortcode. The
+# status -> reaction mapping is OWNED BY THIS PLUGIN: Telegram's
+# setMessageReaction takes a unicode emoji, not a shortcode.
+STATUS_TO_EMOJI = {
+    "pending": "\U0001f44d",
+    "processing": "\U0001f44d",
+    "completed": "\u2705",
+    "failed": "\u274c",
+    "interrupted": "\U0001f494",
+    "skipped": "\U0001f17e\ufe0f",
+    "merged": "\U0001f91d",
+}
+
+# DEFAULT reaction for a status with no explicit mapping (e.g. a NEW thread
+# status added later): the plugin must still react - never drop the reaction,
+# never error. \U0001f440 is the "eyes" emoji.
+DEFAULT_EMOJI = "\U0001f440"
+
+# Legacy (rollout window only): Mattermost-style emoji shortcodes sent by an
+# OLDER core that still mapped status -> shortcode itself. Mapped to their
+# unicode glyphs so an old core keeps working until it is upgraded.
 SHORTCODE_TO_EMOJI = {
     ":white_check_mark:": "\u2705",
     ":x:": "\u274c",
