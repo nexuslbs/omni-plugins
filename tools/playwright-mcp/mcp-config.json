@@ -3,16 +3,10 @@
     {
       "name": "mcp-playwright",
       "transport": "stdio",
-      "command": "docker",
+      "command": "sh",
       "args": [
-        "run", "-i", "--rm", "--init",
-        "mcr.microsoft.com/playwright/mcp",
-        "--headless",
-        "--browser", "chromium",
-        "--no-sandbox",
-        "--isolated",
-        "--timeout-action=10000",
-        "--timeout-navigation=30000"
+        "-c",
+        "set -eu; CID=$(cat /etc/hostname); SRC=$(docker inspect -f '{{range .Mounts}}{{if eq .Destination \"/opt/omni\"}}{{.Source}}{{end}}{{end}}' \"$CID\"); [ -n \"$SRC\" ] || { echo 'playwright-mcp: cannot resolve the host path of /opt/omni' >&2; exit 1; }; PWDIR=\"$SRC/data/playwright\"; ST=\"$PWDIR/state\"; mkdir -p \"$ST\" \"$PWDIR/output\"; SF=\"$ST/${PW_STATE_FILE:-sessions.json}\"; [ -f \"$SF\" ] || printf '{\"cookies\":[],\"origins\":[]}' > \"$SF\"; env | grep '^PW_SECRET_' | sed 's/^PW_SECRET_//' > \"$ST/secrets.env\" || true; [ -s \"$ST/secrets.env\" ] || rm -f \"$ST/secrets.env\"; PWUID=\"${PW_UID:-1000}\"; if chown -R \"$PWUID:$PWUID\" \"$PWDIR\" 2>/dev/null; then chmod 700 \"$PWDIR\" \"$ST\" 2>/dev/null || true; chmod 600 \"$SF\" 2>/dev/null || true; chmod 600 \"$ST/secrets.env\" 2>/dev/null || true; else chmod 755 \"$PWDIR\" \"$ST\" 2>/dev/null || true; chmod 644 \"$SF\" 2>/dev/null || true; chmod 644 \"$ST/secrets.env\" 2>/dev/null || true; fi; if [ -f \"$ST/secrets.env\" ]; then SEC='--secrets=/pw/state/secrets.env'; else SEC=''; fi; exec docker run -i --rm --init --add-host=host.docker.internal:host-gateway -v \"$PWDIR\":/pw mcr.microsoft.com/playwright/mcp --headless --browser chromium --no-sandbox --isolated --output-dir=/pw/output --storage-state=\"/pw/state/${PW_STATE_FILE:-sessions.json}\" $SEC --timeout-action=10000 --timeout-navigation=30000"
       ],
       "env": {},
       "timeout_secs": 120,
