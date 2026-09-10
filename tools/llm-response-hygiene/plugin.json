@@ -1,0 +1,7 @@
+{
+  "name": "llm-response-hygiene",
+  "version": "0.1.0",
+  "type": "mcp",
+  "description": "Detect provider-specific MALFORMED LLM responses (DeepSeek DSML/XML text-mode tool-call markup, markdown tool_call fences, continuation-intent prose) and return the cleaned text. Pure function: no I/O, no network, no LLM call. Backs the omniagent core setting `malformed_response_tool` (empty default = core keeps its built-in provider-neutral heuristic).",
+  "config_schema": []
+}
