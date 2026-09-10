@@ -151,6 +151,11 @@ class TelegramPlatform:
             "capabilities": {
                 "inbound": True,
                 "outbound": True,
+                "commands": {
+                    # Telegram Bot API style commands only: `$new` is NOT a
+                    # command here because this plugin declares what it accepts.
+                    "new": ["/new"],
+                },
             },
         })
         log.info("Initialized: telegram")
