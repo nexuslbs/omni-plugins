@@ -586,6 +586,11 @@ def main():
         http_post(base + "/admin/reaction_allow", {})   # restore the real set
 
         # 6c. typing -> sendChatAction (action=typing)
+        #     The shared outbound gate spaces send* calls to the SAME chat
+        #     (CHAT_SEND_MIN_INTERVAL_SECS); a typing indicator arriving inside
+        #     that window is DROPPED by design (it must never delay a real
+        #     message). Wait past the window so the indicator is not throttled.
+        time.sleep(1.2)
         r = plat.call("typing", {"resource_identifier": "123456789"})
         check(r.get("result", {}).get("typing") is True,
               "typing -> typing:true")
@@ -950,6 +955,230 @@ def main():
         check(res.get("delivered") is False and res.get("suppressed") is True,
               "length regression: intermediate still suppressed "
               "(first/last collapse intact)")
+
+        # ------------------------------------------------------------------
+        # 12c. PART A: the REPLY is retried ONCE with the SAME reply target
+        #      before any standalone fallback, so one transient API rejection
+        #      no longer costs the thread's threading (operator request,
+        #      2026-09-12).
+        # ------------------------------------------------------------------
+        r = plat.call("configure", {"config": {
+            "bot_token": MOCK_TOKEN,
+            "api_base_url": base,
+            "polling_enabled": False,
+            "typing_interval_seconds": 5,
+        }})
+        check(r.get("result", {}).get("configured") is True,
+              "reply-retry setup: reconfigured (polling off, typing 5s)")
+
+        # A 400 that is NOT a parse error is raised immediately by _api_post
+        # (only 429/5xx/network get the built-in retry), so this exercises the
+        # plugin-level reply retry.
+        http_post(base + "/admin/arm", {
+            "method": "sendMessage", "code": 400, "only_reply": True,
+            "description": "Bad Request: mock transient rejection"})
+        calls_before = http_get(base + "/admin/calls").get("calls", {})
+        sent_before = len(http_get(base + "/admin/sent").get("messages", []))
+        r = plat.call("deliver", {
+            "resource_identifier": "123456789",
+            "content": "reply retry keeps threading",
+            "msg_type": "summary",
+            "thread_sequence": 11,
+            "is_final": True,
+            "reply_to_message_id": "303",
+        })
+        res = r.get("result", {})
+        calls_after = http_get(base + "/admin/calls").get("calls", {})
+        sent = http_get(base + "/admin/sent").get("messages", [])
+        check(res.get("delivered") is True,
+              "reply retry: deliver succeeds after one transient rejection")
+        check(calls_after.get("sendMessage", 0)
+              - calls_before.get("sendMessage", 0) == 2,
+              "reply retry: exactly 2 sendMessage attempts (1 failed + 1 retry)")
+        check(len(sent) == sent_before + 1,
+              "reply retry: exactly ONE message landed (no duplicate)")
+        check(str(sent[-1].get("reply_to_message_id")) == "303",
+              "reply retry: THREADING PRESERVED (retry still replies to 303)")
+
+        # 12d. the standalone fallback happens ONLY when the retry also fails;
+        #      both rejections were ANSWERED by the API, so the reply provably
+        #      did not land and the message is sent standalone - never dropped
+        #      and never duplicated.
+        for _ in range(2):
+            http_post(base + "/admin/arm", {
+                "method": "sendMessage", "code": 400, "only_reply": True,
+                "description": "Bad Request: mock persistent rejection"})
+        calls_before = http_get(base + "/admin/calls").get("calls", {})
+        sent_before = len(http_get(base + "/admin/sent").get("messages", []))
+        r = plat.call("deliver", {
+            "resource_identifier": "123456789",
+            "content": "standalone fallback keeps the message",
+            "msg_type": "summary",
+            "thread_sequence": 12,
+            "is_final": True,
+            "reply_to_message_id": "304",
+        })
+        res = r.get("result", {})
+        calls_after = http_get(base + "/admin/calls").get("calls", {})
+        sent = http_get(base + "/admin/sent").get("messages", [])
+        check(res.get("delivered") is True,
+              "reply fallback: standalone send happens after the retry fails")
+        check(calls_after.get("sendMessage", 0)
+              - calls_before.get("sendMessage", 0) == 3,
+              "reply fallback: 2 reply attempts + 1 standalone send (3 calls)")
+        check(len(sent) == sent_before + 1,
+              "reply fallback: exactly ONE message landed (no duplicate)")
+        check("reply_to_message_id" not in sent[-1],
+              "reply fallback: the recovered message is NOT a reply")
+
+        # 12e. PART B: HTTP 429 -> the plugin honors parameters.retry_after,
+        #      WAITS (measured wall clock) and retries within its budget; a 429
+        #      is never turned into an immediate second attempt.
+        http_post(base + "/admin/arm", {
+            "method": "sendMessage", "code": 429, "retry_after": 2,
+            "description": "Too Many Requests: retry after 2"})
+        calls_before = http_get(base + "/admin/calls").get("calls", {})
+        t0 = time.time()
+        r = plat.call("deliver", {
+            "resource_identifier": "987654321",
+            "content": "429 honored",
+            "msg_type": "summary",
+            "thread_sequence": 13,
+            "is_final": True,
+        })
+        elapsed = time.time() - t0
+        calls_after = http_get(base + "/admin/calls").get("calls", {})
+        check(r.get("result", {}).get("delivered") is True,
+              "429: delivery succeeds after honoring retry_after")
+        check(elapsed >= 1.5,
+              "429: plugin WAITED retry_after (%.2fs elapsed >= 1.5s)" % elapsed)
+        check(calls_after.get("sendMessage", 0)
+              - calls_before.get("sendMessage", 0) == 2,
+              "429: exactly 2 sendMessage attempts (1 rejected + 1 retry)")
+
+        # 12f. PART C: the typing signal is throttled IN THE PLUGIN - at most
+        #      ONE sendChatAction per chat per typing_interval_seconds, however
+        #      many typing requests core enqueues; excess is DROPPED, never
+        #      queued or delayed.
+        r = plat.call("configure", {"config": {
+            "bot_token": MOCK_TOKEN,
+            "api_base_url": base,
+            "polling_enabled": False,
+            "typing_interval_seconds": 2,
+        }})
+        res = r.get("result", {})
+        check(res.get("typing_interval_seconds") == 2.0
+              and res.get("typing_enabled") is True,
+              "typing config: explicit 2s round-trips as the effective interval")
+        chat = "555000111"
+        # Quiet the SHARED outbound gate first: it spaces send* calls per chat
+        # (CHAT_SEND_MIN_INTERVAL_SECS=1s), and a typing request arriving inside
+        # that window is dropped by design (typing never queues). Without this
+        # wait the burst below could lose its first indicator to the gate (which
+        # also consumes the throttle window) instead of to the throttle.
+        time.sleep(1.2)
+        actions_before = len(http_get(base + "/admin/actions").get("actions", []))
+        results = [plat.call("typing", {"resource_identifier": chat})
+                   for _ in range(6)]
+        actions = http_get(base + "/admin/actions").get("actions", [])
+        mine = [a for a in actions[actions_before:]
+                if str(a.get("chat_id")) == chat]
+        check(len(mine) == 1,
+              "typing throttle: 6 rapid requests -> exactly 1 sendChatAction")
+        check(sum(1 for x in results
+                  if x.get("result", {}).get("typing") is True) == 1
+              and sum(1 for x in results
+                      if x.get("result", {}).get("throttled") is True) == 5,
+              "typing throttle: 1 sent + 5 DROPPED (no queue, no backlog)")
+        time.sleep(2.2)
+        r = plat.call("typing", {"resource_identifier": chat})
+        actions = http_get(base + "/admin/actions").get("actions", [])
+        mine = [a for a in actions[actions_before:]
+                if str(a.get("chat_id")) == chat]
+        check(len(mine) == 2
+              and r.get("result", {}).get("typing") is True,
+              "typing throttle: a new indicator IS sent after the interval")
+
+        # 12g. explicit 0 and explicit empty -> typing suppressed entirely.
+        for bad_value, label in ((0, "0"), ("", "empty")):
+            r = plat.call("configure", {"config": {
+                "bot_token": MOCK_TOKEN,
+                "api_base_url": base,
+                "polling_enabled": False,
+                "typing_interval_seconds": bad_value,
+            }})
+            res = r.get("result", {})
+            check(res.get("typing_interval_seconds") == 0.0
+                  and res.get("typing_enabled") is False,
+                  "typing disabled: explicit %s -> interval 0/enabled false"
+                  % label)
+            chat2 = "555000222"
+            before = len(http_get(base + "/admin/actions").get("actions", []))
+            rr = [plat.call("typing", {"resource_identifier": chat2})
+                  for _ in range(3)]
+            actions = http_get(base + "/admin/actions").get("actions", [])
+            new = [a for a in actions[before:]
+                   if str(a.get("chat_id")) == chat2]
+            check(not new
+                  and all(x.get("result", {}).get("suppressed") is True
+                          for x in rr),
+                  "typing disabled (%s): ZERO sendChatAction calls" % label)
+
+        # 12h. key ABSENT -> the default 5s interval applies (no config change
+        #      needed on existing installs).
+        r = plat.call("configure", {"config": {
+            "bot_token": MOCK_TOKEN,
+            "api_base_url": base,
+            "polling_enabled": False,
+        }})
+        res = r.get("result", {})
+        check(res.get("typing_interval_seconds") == 5.0
+              and res.get("typing_enabled") is True,
+              "typing config: key ABSENT -> default 5s interval")
+
+        # 12i. invalid values never crash the plugin: they fall back to the
+        #      default and the plugin keeps serving requests.
+        for bad in ("abc", -3):
+            r = plat.call("configure", {"config": {
+                "bot_token": MOCK_TOKEN,
+                "api_base_url": base,
+                "polling_enabled": False,
+                "typing_interval_seconds": bad,
+            }})
+            res = r.get("result", {})
+            check(res.get("typing_interval_seconds") == 5.0,
+                  "typing config: invalid %r -> default 5s (no crash)"
+                  % (bad,))
+
+        # 12j. regression: the typing throttle must not delay or drop any real
+        #      call (sendMessage / editMessageText / setMessageReaction).
+        plat.call("configure", {"config": {
+            "bot_token": MOCK_TOKEN,
+            "api_base_url": base,
+            "polling_enabled": False,
+            "typing_interval_seconds": 2,
+        }})
+        chat3 = "555000333"
+        for _ in range(3):
+            plat.call("typing", {"resource_identifier": chat3})
+        t0 = time.time()
+        r = plat.call("deliver", {"resource_identifier": chat3,
+                                  "content": "deliver after typing"})
+        ext3 = r.get("result", {}).get("external_id")
+        check(r.get("result", {}).get("delivered") is True,
+              "typing throttle does not drop sendMessage")
+        r = plat.call("edit_message", {"resource_identifier": chat3,
+                                       "external_id": ext3,
+                                       "content": "edited after typing"})
+        check(r.get("result", {}).get("edited") is True,
+              "typing throttle does not drop editMessageText")
+        r = plat.call("react", {"resource_identifier": chat3,
+                                "external_id": ext3,
+                                "status": "processing"})
+        check(r.get("result", {}).get("reacted") is True,
+              "typing throttle does not drop setMessageReaction")
+        check(time.time() - t0 < 10.0,
+              "typing throttle adds no queueing delay to real calls")
 
         # 13. missing bot_token (the production inbound-dead failure mode):
         #     polling enabled but no token -> configure still succeeds for

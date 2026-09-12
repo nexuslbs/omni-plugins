@@ -16,12 +16,23 @@ A Python implementation of the omniagent **telegram platform plugin**
 
 * `initialize` → name `telegram`, capabilities `{inbound: true, outbound: true}`
 * `configure` → stores `bot_token`, `api_base_url`, `polling_enabled`,
-  `poll_interval_secs`, `parent_by_chat`, `first_last_only`
+  `poll_interval_secs`, `parent_by_chat`, `first_last_only`,
+  `typing_interval_seconds`
 * `deliver` → `POST sendMessage` (chat_id = resource_identifier, text = content)
 * `edit_message` → `POST editMessageText`
 * `delete_message` → `POST deleteMessage`
 * `react` → `POST setMessageReaction`
-* `typing` → `POST sendChatAction` (action `typing`)
+* `typing` → `POST sendChatAction` (action `typing`), throttled to at most
+  ONE call per chat every `typing_interval_seconds` (default 5 s; `0`/empty
+  disables the signal entirely). Excess typing requests are dropped, never
+  queued
+* outbound rate limiting → every Bot API call passes through ONE shared
+  gate (a global minimum interval plus a per-chat minimum interval for the
+  `send*` methods), so the plugin stays below Telegram's limits even when
+  the reply retry doubles the `sendMessage` volume. HTTP 429 is honored via
+  `parameters.retry_after` (interruptible wait, capped) with a bounded retry
+  budget, 5xx gets a short backoff, and connection-level failures are only
+  retried for non-`send*` methods, where a retry cannot duplicate a message
 * inbound → background long-poll of `getUpdates` (offset-based); each inbound
   message is emitted to stdout as an `inbound_message` notification
   (`resource_identifier` = chat id, `text`, `external_id` = message_id,
@@ -36,6 +47,7 @@ A Python implementation of the omniagent **telegram platform plugin**
 | `api_base_url` | string | `https://api.telegram.org` | Override to point at the mock for tests |
 | `polling_enabled` | boolean | `true` | Enable inbound getUpdates long-polling |
 | `poll_interval_secs` | integer | `5` | getUpdates long-poll timeout + loop cadence |
+| `typing_interval_seconds` | number | `5` | At most ONE `sendChatAction` per chat every N seconds, regardless of how often omniagent requests typing (core enqueues one every 5 s). Excess requests are dropped, never queued. `0` (or an empty value) disables the typing signal entirely; invalid/negative values fall back to the default |
 | `parent_by_chat` | boolean | `true` | When `true` (default), every inbound user message carries the chat id as the **parent external id** (delivered via `metadata["parent_external_id"]`, the neutral envelope key omniagent reads (`metadata["root_id"]` carries the same value as a one-release alias for older cores)), so threads created from the same chat always share one parent and pending messages from that chat merge into a processing thread via omniagent's existing pending/sub-prompt machinery. Set to `false` to disable parent ids (each message creates its own thread). |
 | `first_last_only` | boolean | `true` | When `true` (default), only the FIRST and LAST messages of a thread run are delivered to the chat; intermediate messages are collapsed (suppressed). Set to `false` to deliver every thread message. |
 

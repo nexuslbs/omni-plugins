@@ -58,6 +58,14 @@
       "description": "When true (default), every inbound user message carries the chat id as the parent external id (the same value for all messages from that chat), so threads created from the same chat always share one parent and pending messages from that chat can merge into a processing thread (existing omniagent pending/merge machinery). Set to false to disable parent ids and create one thread per message."
     },
     {
+      "key": "typing_interval_seconds",
+      "label": "Typing indicator interval (seconds)",
+      "type": "number",
+      "required": false,
+      "default": 5,
+      "description": "At most ONE Telegram typing action (sendChatAction) per chat every N seconds, no matter how many typing requests omniagent sends (core enqueues one every 5 s while a thread runs); excess requests are dropped, never queued. Set 0 (or leave the value empty) to send NO typing signal at all. Invalid or negative values fall back to the default 5 s."
+    },
+    {
       "key": "first_last_only",
       "label": "First/last message only",
       "type": "boolean",

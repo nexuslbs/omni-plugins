@@ -12,6 +12,20 @@ Implements the OmniAgent platform plugin protocol (JSON lines over stdin/stdout)
   * react           -> Telegram Bot API setMessageReaction
   * typing          -> Telegram Bot API sendChatAction (action=typing)
 
+Outbound reliability + rate limiting (2026-09-12):
+  * EVERY call passes through ONE shared outbound rate gate (a global
+    min-interval plus a per-chat min-interval for the send* methods) and HTTP
+    429 is honored (parameters.retry_after) with a bounded, interruptible
+    retry budget - the plugin must not hammer the Bot API into a temporary
+    connection block;
+  * a reply delivery that the API REJECTED is retried once with the SAME
+    reply_to_message_id (threading preserved) before the standalone fallback;
+    a connection-level failure is never blind-retried (delivery is UNKNOWN,
+    so a retry could duplicate the message);
+  * the typing signal is throttled per chat (`typing_interval_seconds`,
+    default 5 s; an explicit 0/empty disables it) and is DROPPED - never
+    queued - when the rate gate is busy, because it is purely cosmetic.
+
 Inbound: when polling_enabled is true a background thread long-polls
 getUpdates (offset-based) and emits `inbound_message` notifications to
 stdout, exactly like the mattermost platform does.
@@ -56,6 +70,155 @@ TG_MSG_LIMIT = 4096    # sendMessage hard limit: 1-4096 chars after parsing
 TG_MSG_BUDGET = 3800   # raw markdown budget per chunk (HTML rendering inflates)
 
 
+# ----------------------------------------------------------------------
+# Outbound rate limiting + retry budget (operator request, 2026-09-12)
+# ----------------------------------------------------------------------
+# Telegram throttles bots and answers HTTP 429 ({"ok": false,
+# "parameters": {"retry_after": N}}) when a bot is too fast; sustained abuse
+# escalates to a temporary block of the connection (every call answers "Too
+# Many Requests: retry after N"), which is what a polling plugin can hit.
+# EVERY outbound call in this plugin therefore passes through ONE shared gate:
+#   * GLOBAL_MIN_INTERVAL_SECS: minimum spacing between ANY two API calls
+#     (far below Telegram's ~30 calls/second ceiling);
+#   * CHAT_SEND_MIN_INTERVAL_SECS: minimum spacing between two send* calls to
+#     the SAME chat (Telegram allows about 1 message/second in a private chat
+#     and about 20/minute in a group).
+# The gate is a per-chat min-interval gate, not a queue: a caller waits for
+# its own slot, so a burst can never build an unbounded backlog. The cosmetic
+# typing indicator is special-cased: when the gate is busy it is DROPPED
+# instead of waiting (see handle_typing) - it must never delay real messages.
+GLOBAL_MIN_INTERVAL_SECS = 0.05
+CHAT_SEND_MIN_INTERVAL_SECS = 1.0
+# Bounded retry budget for transient Telegram failures (429 / 5xx / network):
+# small and explicit - never an infinite loop.
+API_MAX_ATTEMPTS = 3
+API_RETRY_BACKOFF_SECS = 1.0
+# A single 429 retry_after wait is capped so an absurd value can never stall
+# the plugin indefinitely; the wait itself is interruptible by shutdown.
+MAX_RETRY_AFTER_SECS = 60.0
+API_TIMEOUT_SECS = 60
+# Typing throttle default: at most ONE sendChatAction per chat every N seconds,
+# no matter how many typing requests core enqueues (core enqueues one every 5 s
+# for the whole run, ~12/min per active thread - the plugin's biggest
+# contributor to Bot API call volume). 5 s matches Telegram's own typing-action
+# lifetime, so the indicator stays visible while the agent works. An explicit 0
+# (or empty) config value suppresses the typing signal entirely.
+DEFAULT_TYPING_INTERVAL_SECS = 5.0
+# Methods whose CONNECTION-level failure is safe to retry: they are reads or
+# idempotent replacements, so a retry cannot duplicate a user-visible message.
+# send* methods are deliberately absent: for those a connection failure leaves
+# delivery UNKNOWN and a blind retry could double-post the message.
+CONNECTION_RETRY_METHODS = frozenset({
+    "getUpdates", "editMessageText", "setMessageReaction",
+})
+
+
+def _parse_retry_after(raw):
+    """Extract Telegram's parameters.retry_after (seconds) from an error body.
+
+    Accepts a raw JSON string or an already-decoded body; returns None when the
+    body carries no usable retry_after (the common case).
+    """
+    if raw is None:
+        return None
+    if isinstance(raw, (dict, list)):
+        try:
+            raw = json.dumps(raw)
+        except (TypeError, ValueError):
+            return None
+    try:
+        body = json.loads(raw)
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(body, dict):
+        return None
+    params = body.get("parameters")
+    if not isinstance(params, dict):
+        return None
+    try:
+        value = float(params.get("retry_after"))
+    except (TypeError, ValueError):
+        return None
+    return value if value > 0 else None
+
+
+def _read_error_body(err):
+    """Read an HTTPError body once: used for the log message AND for parsing
+    parameters.retry_after. Truncated; "" when unreadable."""
+    try:
+        return err.read().decode("utf-8", errors="replace")[:500]
+    except Exception:
+        return ""
+
+
+class OutboundRateGate:
+    """ONE shared outbound rate-limit gate for every Telegram API call.
+
+    See the module-level constants for the rationale. `now` and `sleep` are
+    injectable so the throttle is testable with a fake clock (no real sleeping
+    in tests); `sleep(seconds)` must return True when shutdown was requested.
+    """
+
+    def __init__(self, stop_event, global_interval=GLOBAL_MIN_INTERVAL_SECS,
+                 chat_interval=CHAT_SEND_MIN_INTERVAL_SECS,
+                 now=time.monotonic, sleep=None):
+        self._lock = threading.Lock()
+        self._stop = stop_event
+        self.global_interval = float(global_interval)
+        self.chat_interval = float(chat_interval)
+        self._now = now
+        self._sleep = sleep or stop_event.wait
+        self._last_global = 0.0
+        self._last_chat = {}
+
+    def _wait_needed(self, chat_id, is_send):
+        now = self._now()
+        wait = self.global_interval - (now - self._last_global)
+        if is_send and chat_id is not None:
+            wait = max(wait, self.chat_interval
+                       - (now - self._last_chat.get(chat_id, 0.0)))
+        # Waits below the float-precision floor count as satisfied: a coarse or
+        # injected clock can otherwise leave a ~1e-14 remainder that never
+        # reaches 0 and spins the acquire loop forever.
+        return 0.0 if wait <= 1e-6 else wait
+
+    def _stamp(self, chat_id, is_send):
+        now = self._now()
+        self._last_global = now
+        if is_send and chat_id is not None:
+            self._last_chat[chat_id] = now
+
+    def try_acquire(self, chat_id=None, is_send=True):
+        """Reserve a slot WITHOUT waiting.
+
+        False means the gate is busy and the caller must DROP the request -
+        used for the cosmetic typing indicator, which must never queue, never
+        wait and never delay deliver/edit/react.
+        """
+        with self._lock:
+            if self._wait_needed(chat_id, is_send) > 0:
+                return False
+            self._stamp(chat_id, is_send)
+            return True
+
+    def acquire(self, chat_id=None, is_send=True):
+        """Block until the caller's slot is free.
+
+        Returns False when shutdown interrupted the wait, so the caller aborts
+        the API call instead of proceeding after a stop request.
+        """
+        while True:
+            with self._lock:
+                wait = self._wait_needed(chat_id, is_send)
+                if wait <= 0:
+                    self._stamp(chat_id, is_send)
+                    return True
+            # Sleep in small slices so shutdown stays responsive, and re-check
+            # the clock on every wake-up (another caller may have moved it).
+            if self._sleep(min(wait, 0.25)):
+                return False
+
+
 def _as_bool(value, default=False):
     """Coerce a configure value to bool.
 
@@ -83,9 +246,23 @@ class TelegramPlatform:
         self.first_last_only = True
         self._offset = None
         self._poll_thread = None
+        # Plugin-wide shutdown signal (stdin closed / "shutdown" method). The
+        # outbound rate gate and the 429 backoff wait on THIS event.
         self._stop = threading.Event()
+        # Polling has its OWN stop event: a configure that disables polling (or
+        # reconfigures the token) must stop the getUpdates thread WITHOUT
+        # signalling a plugin shutdown - otherwise the outbound gate would
+        # abort every later API call ("shutdown while waiting for the outbound
+        # rate gate") and deliveries would be dropped. Regression fixed
+        # 2026-09-12 (the gate originally shared the polling event).
+        self._poll_stop = threading.Event()
         self._stdout_lock = threading.Lock()
         self._configured = False
+        # Outbound rate limiting + typing throttle (2026-09-12).
+        self._gate = OutboundRateGate(self._stop)
+        self.typing_interval_secs = DEFAULT_TYPING_INTERVAL_SECS
+        self._typing_lock = threading.Lock()
+        self._last_typing = {}
 
     # ------------------------------------------------------------------
     # stdout helpers (single write per line so polling thread + main
@@ -108,35 +285,108 @@ class TelegramPlatform:
     # ------------------------------------------------------------------
     # Telegram Bot API client (stdlib only)
     # ------------------------------------------------------------------
-    def _api_post(self, method, params):
+    def _api_post(self, method, params, attempts=None, gate_acquired=False):
         """POST {api_base}/bot{token}/{method} with form-encoded params.
 
-        Returns the decoded JSON body. Raises TelegramApiError on HTTP or
-        API-level errors (ok:false).
+        Every call goes through the ONE shared outbound rate gate and carries a
+        bounded retry budget for transient failures (Part B, 2026-09-12):
+
+          * HTTP 429 -> honor ``parameters.retry_after`` (interruptible wait,
+            capped at MAX_RETRY_AFTER_SECS) and retry. A 429 is NEVER turned
+            into an immediate second attempt.
+          * HTTP 5xx -> retry after a short backoff: the API ANSWERED with an
+            error, so delivery provably did not happen and a retry cannot
+            duplicate a message.
+          * connection-level failure (urllib URLError / timeout) -> delivery is
+            UNKNOWN, so only methods whose retry cannot duplicate a
+            user-visible message are retried (CONNECTION_RETRY_METHODS).
+          * any other 4xx (parse/entity rejection, stale reply id) is raised
+            immediately: the caller owns those fallbacks.
+
+        attempts: explicit retry budget (default API_MAX_ATTEMPTS).
+        gate_acquired: the caller already reserved a gate slot for its FIRST
+        attempt (the non-blocking typing path).
+
+        Returns the decoded JSON body's ``result``; raises TelegramApiError.
         """
         if not self.bot_token:
             raise TelegramApiError("bot_token is not configured")
         url = "{}/bot{}/{}".format(self.api_base_url.rstrip("/"),
                                    self.bot_token, method)
         data = urllib.parse.urlencode(params).encode("utf-8")
-        req = urllib.request.Request(url, data=data, method="POST")
-        try:
-            with urllib.request.urlopen(req, timeout=60) as resp:
-                body = json.loads(resp.read().decode("utf-8"))
-        except urllib.error.HTTPError as e:
-            detail = ""
+        is_send = method.startswith("send")
+        chat_id = params.get("chat_id")
+        budget = API_MAX_ATTEMPTS if attempts is None else max(1, int(attempts))
+        last_err = None
+        for attempt in range(1, budget + 1):
+            if not (gate_acquired and attempt == 1):
+                if not self._gate.acquire(chat_id if is_send else None,
+                                          is_send=is_send):
+                    raise TelegramApiError(
+                        "shutdown while waiting for the outbound rate gate "
+                        "on {}".format(method), answered=False)
+            req = urllib.request.Request(url, data=data, method="POST")
             try:
-                detail = e.read().decode("utf-8", errors="replace")[:200]
-            except Exception:
-                pass
-            raise TelegramApiError("HTTP {} from Telegram API: {}".format(
-                e.code, detail))
-        except urllib.error.URLError as e:
-            raise TelegramApiError("Cannot reach Telegram API: {}".format(e.reason))
-        if not body.get("ok"):
-            desc = body.get("description", str(body))
-            raise TelegramApiError("Telegram API error on {}: {}".format(method, desc))
-        return body.get("result")
+                with urllib.request.urlopen(req, timeout=API_TIMEOUT_SECS) as resp:
+                    raw = resp.read().decode("utf-8", errors="replace")
+                try:
+                    body = json.loads(raw)
+                except ValueError:
+                    raise TelegramApiError(
+                        "Telegram API returned invalid JSON for {}".format(method),
+                        answered=True)
+            except urllib.error.HTTPError as e:
+                code = e.code
+                detail = _read_error_body(e)
+                err = TelegramApiError(
+                    "HTTP {} from Telegram API: {}".format(code, detail),
+                    answered=True, status=code,
+                    retry_after=_parse_retry_after(detail))
+                wait = None
+                if attempt < budget:
+                    if code == 429:
+                        # Honor Telegram's own back-pressure signal.
+                        wait = err.retry_after or API_RETRY_BACKOFF_SECS
+                    elif 500 <= code < 600:
+                        wait = API_RETRY_BACKOFF_SECS * attempt
+                if wait is None:
+                    raise err
+                wait = min(wait, MAX_RETRY_AFTER_SECS)
+                log.warning(
+                    "%s rejected with HTTP %s - waiting %.1fs before retry "
+                    "%d/%d", method, code, wait, attempt, budget)
+                if self._wait(wait):
+                    raise TelegramApiError(
+                        "shutdown while waiting to retry {}".format(method),
+                        answered=False, status=code)
+                last_err = err
+                continue
+            except (urllib.error.URLError, TimeoutError, OSError) as e:
+                reason = getattr(e, "reason", e)
+                err = TelegramApiError(
+                    "Cannot reach Telegram API: {}".format(reason),
+                    answered=False)
+                # Delivery is UNKNOWN: never blind-retry a send* call.
+                if attempt < budget and method in CONNECTION_RETRY_METHODS:
+                    wait = min(API_RETRY_BACKOFF_SECS * attempt,
+                               MAX_RETRY_AFTER_SECS)
+                    log.warning("%s unreachable (%s) - retrying in %.1fs "
+                                "(%d/%d)", method, err, wait, attempt, budget)
+                    if self._wait(wait):
+                        raise TelegramApiError(
+                            "shutdown while waiting to retry {}".format(method),
+                            answered=False)
+                    last_err = err
+                    continue
+                raise err
+            if not body.get("ok"):
+                desc = body.get("description", str(body))
+                raise TelegramApiError(
+                    "Telegram API error on {}: {}".format(method, desc),
+                    answered=True, retry_after=_parse_retry_after(body))
+            return body.get("result")
+        raise last_err or TelegramApiError(
+            "Telegram API error on {}: retry budget exhausted".format(method))
 
     def _chat_id(self, resource_identifier):
         """Telegram chat ids are integers or @-prefixed usernames; keep as-is."""
@@ -183,6 +433,18 @@ class TelegramPlatform:
         self.parent_by_chat = _as_bool(config.get("parent_by_chat", True))
         # Absent key -> the schema default (plugin.json) is true.
         self.first_last_only = _as_bool(config.get("first_last_only", True))
+        # TYPING THROTTLE (operator update 2026-09-12): at most ONE
+        # sendChatAction per chat every N seconds no matter how often core
+        # requests typing. The key ABSENT -> default (5 s); an explicit 0 (or
+        # null/empty) -> typing is SUPPRESSED entirely for this platform; a
+        # positive value -> the minimum interval for one chat. Invalid values
+        # warn and fall back to the default - a bad config never crashes the
+        # plugin.
+        if "typing_interval_seconds" in config:
+            self.typing_interval_secs = self._parse_typing_interval(
+                config.get("typing_interval_seconds"))
+        else:
+            self.typing_interval_secs = DEFAULT_TYPING_INTERVAL_SECS
         self._configured = True
         if self.polling_enabled and not self.bot_token:
             # Loud, never silent: this is the production failure mode where a
@@ -196,10 +458,12 @@ class TelegramPlatform:
                 "(token from @BotFather) and restart the plugin."
             )
         log.info("Configured: api_base=%s polling=%s interval=%ss "
-                 "parent_by_chat=%s first_last_only=%s token_set=%s",
+                 "parent_by_chat=%s first_last_only=%s typing_interval=%ss "
+                 "token_set=%s",
                  self.api_base_url, self.polling_enabled,
                  self.poll_interval_secs, self.parent_by_chat,
-                 self.first_last_only, bool(self.bot_token))
+                 self.first_last_only, self.typing_interval_secs,
+                 bool(self.bot_token))
 
         if self.polling_enabled and self.bot_token:
             self._start_polling()
@@ -213,6 +477,10 @@ class TelegramPlatform:
             "configured": True,
             "polling_enabled": self.polling_enabled and bool(self.bot_token),
             "first_last_only": self.first_last_only,
+            # Effective typing throttle (0.0 = typing suppressed); echoed so the
+            # round-trip is complete and testable.
+            "typing_interval_seconds": self.typing_interval_secs,
+            "typing_enabled": self.typing_interval_secs > 0,
         }
         if self.polling_enabled and not self.bot_token:
             response["warning"] = (
@@ -220,6 +488,32 @@ class TelegramPlatform:
                 "set bot_token in the telegram plugin config and restart"
             )
         self._respond(req_id, result=response)
+
+    @staticmethod
+    def _parse_typing_interval(raw):
+        """Normalise the typing_interval_seconds config value.
+
+        ABSENT is handled by the caller (default). An explicit 0 / null / empty
+        value DISABLES the typing signal (returns 0.0); a positive number is the
+        minimum interval between two sendChatAction calls for one chat; anything
+        else (non-numeric, negative) falls back to the default with a warning -
+        a bad config must never crash the plugin.
+        """
+        if raw is None:
+            return 0.0                      # explicit null -> typing disabled
+        if isinstance(raw, str) and not raw.strip():
+            return 0.0                      # explicit empty -> typing disabled
+        try:
+            value = float(raw)
+        except (TypeError, ValueError):
+            log.warning("typing_interval_seconds=%r is not a number - using the "
+                        "default %ss", raw, DEFAULT_TYPING_INTERVAL_SECS)
+            return DEFAULT_TYPING_INTERVAL_SECS
+        if value < 0:
+            log.warning("typing_interval_seconds=%r is negative - using the "
+                        "default %ss", raw, DEFAULT_TYPING_INTERVAL_SECS)
+            return DEFAULT_TYPING_INTERVAL_SECS
+        return value
 
     def handle_deliver(self, req_id, params):
         resource = params.get("resource_identifier", "")
@@ -290,33 +584,54 @@ class TelegramPlatform:
             })
             log.info("Delivered message %s to chat %s (reply_to=%s, parts=%d)",
                      external_id, resource, reply_to_int, len(parts))
+            return
         except TelegramApiError as e:
-            if reply_to_int is not None:
-                # The seq-0 message may have been deleted or the id may be
-                # stale (legacy thread): fall back to standalone sends (no
-                # reply) and log it - the message is never dropped.
-                log.warning(
-                    "deliver reply to %s failed (%s) - retrying standalone",
+            delivered = int(getattr(e, "delivered_parts", 0) or 0)
+            if reply_to_int is None:
+                log.error("deliver failed after %d/%d part(s): %s",
+                          delivered, len(parts), e)
+                self._respond(req_id, error={"code": -2, "message": str(e)})
+                return
+            if not e.answered:
+                # CONNECTION-LEVEL failure: Telegram never answered, so we do
+                # NOT know whether the reply landed. Re-sending the reply, or
+                # posting a standalone copy, could DOUBLE-POST the message, so
+                # neither is attempted (duplicate suppression). Nothing is
+                # lost: the message stays persisted in the thread history and
+                # the error is reported to core.
+                log.error(
+                    "deliver reply to %s failed at the connection level "
+                    "(delivery UNKNOWN, no retry to avoid a duplicate): %s",
                     reply_to_int, e,
                 )
-                try:
-                    external_id = self._deliver_parts(resource, parts, None)
-                    self._respond(req_id, result={
-                        "delivered": True,
-                        "external_id": external_id,
-                    })
-                    log.info(
-                        "Delivered message %s to chat %s (standalone fallback, "
-                        "parts=%d)",
-                        external_id, resource, len(parts),
-                    )
-                    return
-                except TelegramApiError as e2:
-                    log.error("deliver failed: %s", e2)
-                    self._respond(req_id, error={"code": -2, "message": str(e2)})
-                    return
-            log.error("deliver failed: %s", e)
-            self._respond(req_id, error={"code": -2, "message": str(e)})
+                self._respond(req_id, error={"code": -2, "message": str(e)})
+                return
+            # Telegram ANSWERED with a rejection (e.g. a stale seq-0 id, or a
+            # 429 that exhausted its retry budget). The reply was already
+            # retried once with the same reply target (see _send_part) and
+            # provably did not land, so fall back to standalone sends - resuming
+            # at the part that failed and NEVER re-sending the parts that
+            # already landed (no duplicates).
+            remaining = parts[delivered:]
+            log.warning(
+                "deliver reply to %s failed (%s) - falling back to standalone "
+                "for %d remaining part(s)",
+                reply_to_int, e, len(remaining),
+            )
+            try:
+                external_id = self._deliver_parts(resource, remaining, None)
+                self._respond(req_id, result={
+                    "delivered": True,
+                    "external_id": external_id,
+                })
+                log.info(
+                    "Delivered message %s to chat %s (standalone fallback, "
+                    "parts=%d)",
+                    external_id, resource, len(remaining),
+                )
+            except TelegramApiError as e2:
+                log.error("deliver failed: %s", e2)
+                self._respond(req_id, error={"code": -2, "message": str(e2)})
 
     def _deliver_parts(self, resource, parts, reply_to_int):
         """Send every part of a delivery to the chat.
@@ -327,13 +642,50 @@ class TelegramPlatform:
         a standalone follow-up message, because Telegram has no multi-part
         message container. Returns the external message id of the LAST part,
         which is the id core records on the message row.
+
+        PART A (2026-09-12): the reply-carrying part is retried ONCE with the
+        SAME reply_to_message_id when Telegram ANSWERED with a rejection, so a
+        single transient rejection no longer costs the thread's threading.
+        On failure the raised error carries ``delivered_parts`` (the number of
+        parts Telegram already accepted) so the caller's standalone fallback
+        can resume at the failed part instead of re-sending - and duplicating -
+        the parts that already landed.
         """
+        sent = 0
         external_id = ""
         for i, part in enumerate(parts):
             reply = reply_to_int if i == 0 else None
-            result = self._send_rendered(resource, part, reply)
+            try:
+                result = self._send_part(resource, part, reply)
+            except TelegramApiError as e:
+                e.delivered_parts = sent
+                raise
+            sent += 1
             external_id = str(result.get("message_id", ""))
         return external_id
+
+    def _send_part(self, resource, part, reply_to_int):
+        """Send one part; retry the REPLY part once on an ANSWERED rejection.
+
+        DUPLICATE-SUPPRESSION RULE: the same reply is only re-sent when
+        Telegram ANSWERED the first attempt with an error status (HTTP 4xx/5xx
+        with a body, e.g. 429 too-many-requests or 400 'message not found'),
+        because an answered rejection proves delivery did NOT happen. On a
+        connection-level failure (urllib URLError/timeout) delivery is UNKNOWN,
+        so the message is NOT retried blindly - that could double-post the
+        reply - and the error is propagated to the caller instead.
+        """
+        try:
+            return self._send_rendered(resource, part, reply_to_int)
+        except TelegramApiError as e:
+            if reply_to_int is None or not e.answered:
+                raise
+            log.warning(
+                "deliver reply to %s failed (%s) - retrying the SAME reply "
+                "once before falling back to standalone",
+                reply_to_int, e,
+            )
+            return self._send_rendered(resource, part, reply_to_int)
 
     def _send_rendered(self, resource, content, reply_to_int):
         """sendMessage with the content rendered from markdown to Telegram HTML.
@@ -413,17 +765,56 @@ class TelegramPlatform:
             log.error("delete_message failed: %s", e)
             self._respond(req_id, error={"code": -2, "message": str(e)})
 
+    def _reserve_typing_slot(self, chat_id):
+        """True when a sendChatAction slot is free for this chat right now.
+
+        The slot is reserved atomically BEFORE the call, so a burst of typing
+        requests cannot all pass the check and a failed send does not
+        immediately allow another one: the interval is between ATTEMPTS, which
+        is what keeps the call volume bounded. No queue, no backlog.
+        """
+        now = time.monotonic()
+        with self._typing_lock:
+            last = self._last_typing.get(chat_id)
+            if last is not None and (now - last) < self.typing_interval_secs:
+                return False
+            self._last_typing[chat_id] = now
+            return True
+
     def handle_typing(self, req_id, params):
         resource = params.get("resource_identifier", "")
+        chat_id = self._chat_id(resource)
+        # TYPING THROTTLE (operator update 2026-09-12): core enqueues a typing
+        # indicator every 5 s for the WHOLE run (~12 sendChatAction/min per
+        # active thread), which is by far the plugin's biggest contributor to
+        # Telegram API call volume. At most ONE sendChatAction per chat every
+        # typing_interval_seconds; every excess request is DROPPED - never
+        # queued and never delayed - because typing is purely cosmetic. An
+        # explicit 0/empty typing_interval_seconds suppresses typing entirely.
+        if self.typing_interval_secs <= 0:
+            self._respond(req_id, result={"typing": False, "suppressed": True})
+            return
+        if not self._reserve_typing_slot(chat_id):
+            self._respond(req_id, result={"typing": False, "throttled": True})
+            return
+        # Typing is the FIRST thing dropped when the shared outbound gate is
+        # saturated: try_acquire NEVER waits, because the plugin's request loop
+        # is single-threaded and a wait here would delay deliver/edit/react.
+        if not self._gate.try_acquire(chat_id, is_send=True):
+            self._respond(req_id, result={"typing": False, "throttled": True})
+            return
         try:
+            # attempts=1: a cosmetic indicator is never retried - a 429 wait
+            # would block the request loop and delay real deliveries. The
+            # per-chat throttle above is what keeps this call rate bounded.
             self._api_post("sendChatAction", {
-                "chat_id": self._chat_id(resource),
+                "chat_id": chat_id,
                 "action": "typing",
-            })
+            }, attempts=1, gate_acquired=True)
             self._respond(req_id, result={"typing": True})
             log.info("Typing indicator sent to chat %s", resource)
         except TelegramApiError as e:
-            log.error("typing failed: %s", e)
+            log.warning("typing failed (cosmetic, dropped): %s", e)
             self._respond(req_id, error={"code": -2, "message": str(e)})
 
     def handle_react(self, req_id, params):
@@ -493,8 +884,27 @@ class TelegramPlatform:
     # ------------------------------------------------------------------
     # Inbound: long-poll getUpdates
     # ------------------------------------------------------------------
+    def _wait(self, seconds):
+        """Interruptible wait; returns True when shutdown was requested.
+
+        Tests stub this to avoid real waiting (there is no real sleep in the
+        unit tests of the retry/backoff paths).
+        """
+        return self._stop.wait(max(0.0, seconds))
+
+    def _poll_wait(self, seconds):
+        """Interruptible wait for the POLL thread only.
+
+        Distinct from _wait (the plugin-wide shutdown wait used by the 429
+        backoff and by the outbound rate gate): polling has its own stop event,
+        so disabling/reconfiguring polling can never signal a plugin shutdown.
+        """
+        if self._stop.is_set() or self._poll_stop.is_set():
+            return True
+        return self._poll_stop.wait(max(0.0, seconds)) or self._stop.is_set()
+
     def _stop_polling(self):
-        self._stop.set()
+        self._poll_stop.set()
         if self._poll_thread and self._poll_thread.is_alive():
             self._poll_thread.join(timeout=5)
         self._poll_thread = None
@@ -508,14 +918,14 @@ class TelegramPlatform:
             return
         if self._poll_thread and self._poll_thread.is_alive():
             return
-        self._stop.clear()
+        self._poll_stop.clear()
         self._poll_thread = threading.Thread(
             target=self._poll_loop, daemon=True, name="telegram-poll")
         self._poll_thread.start()
         log.info("Inbound polling started (interval=%ss)", self.poll_interval_secs)
 
     def _poll_loop(self):
-        while not self._stop.is_set():
+        while not self._poll_stop.is_set():
             try:
                 params = {
                     "timeout": POLL_LONGPOLL_SECS,
@@ -536,14 +946,20 @@ class TelegramPlatform:
                         self._offset = int(upd_id) + 1
             except TelegramApiError as e:
                 log.warning("getUpdates failed: %s", e)
-                # Error backoff: don't hot-loop on persistent failures.
-                self._stop.wait(min(self.poll_interval_secs, 30))
+                # Error backoff: don't hot-loop on persistent failures. A 429
+                # that exhausted its retry budget tells us exactly how long to
+                # wait (parameters.retry_after); honor it, capped.
+                backoff = min(self.poll_interval_secs, 30)
+                if e.retry_after:
+                    backoff = max(backoff,
+                                  min(e.retry_after, MAX_RETRY_AFTER_SECS))
+                self._poll_wait(backoff)
             except Exception as e:  # pragma: no cover - defensive
                 log.warning("poll loop error: %s", e)
-                self._stop.wait(min(self.poll_interval_secs, 30))
+                self._poll_wait(min(self.poll_interval_secs, 30))
             else:
                 # Short sleep between long-polls to keep offset commits sane.
-                self._stop.wait(max(0.5, min(self.poll_interval_secs, 5)))
+                self._poll_wait(max(0.5, min(self.poll_interval_secs, 5)))
 
     def _handle_update(self, update):
         for kind in ("message", "channel_post"):
@@ -651,6 +1067,7 @@ class TelegramPlatform:
                 self.handle_typing(req_id, params)
             elif method == "shutdown":
                 self._stop.set()
+                self._poll_stop.set()
                 self._respond(req_id, result={"shutdown": True})
             else:
                 log.warning("Unknown method: %s", method)
@@ -660,6 +1077,7 @@ class TelegramPlatform:
                         "message": "Unknown method: {}".format(method),
                     })
         self._stop.set()
+        self._poll_stop.set()
         log.info("Telegram platform plugin shutting down (stdin closed)")
 
 
@@ -1089,7 +1507,23 @@ def _is_parse_error(err):
 
 
 class TelegramApiError(Exception):
-    pass
+    """A Telegram API call failure.
+
+    ``answered`` is True when Telegram ANSWERED the request with an error
+    status (HTTP 4xx/5xx with a body) - delivery provably did NOT happen, so a
+    retry cannot duplicate a message. It is False for connection-level
+    failures (urllib URLError/timeout, shutdown) where delivery is UNKNOWN and
+    a blind retry could double-post the message.
+
+    ``status``/``retry_after`` carry the HTTP status and Telegram's
+    parameters.retry_after (seconds) when present.
+    """
+
+    def __init__(self, message, answered=True, status=None, retry_after=None):
+        super().__init__(message)
+        self.answered = answered
+        self.status = status
+        self.retry_after = retry_after
 
 
 def main():

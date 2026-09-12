@@ -77,6 +77,10 @@ class MockTelegramState:
         self.next_update_id = 1
         self.next_message_id = 1000
         self.get_updates_calls = 0
+        self.call_counts = {}        # method -> attempted call count
+        # Armed one-shot failures for retry/rate-limit tests: each entry is a
+        # spec dict, consumed by the next MATCHING request.
+        self.armed_failures = []
         self.token = None            # last-seen token (any non-empty accepted)
         self.bot_fail = False      # when True every /bot<token>/* POST returns HTTP 500
         self.bot_delay = 0.0      # seconds each sendMessage sleeps (slow-API simulation)
@@ -84,6 +88,31 @@ class MockTelegramState:
         # Telegram reaction set; /admin/reaction_allow can narrow it to
         # simulate a REJECTED (invalid) mapping.
         self.valid_reaction_emojis = set(VALID_REACTION_EMOJIS)
+
+    def record_call(self, method):
+        with self.lock:
+            self.call_counts[method] = self.call_counts.get(method, 0) + 1
+
+    def arm_failure(self, spec):
+        """Queue a one-shot failure spec for the next matching request.
+
+        spec keys: method (optional; None = any), code (default 500),
+        description, retry_after (adds parameters.retry_after),
+        only_reply (only fail requests carrying reply_to_message_id).
+        """
+        with self.lock:
+            self.armed_failures.append(dict(spec or {}))
+
+    def take_armed_failure(self, method, body):
+        """Return (and consume) the first armed failure matching this request."""
+        with self.lock:
+            for i, spec in enumerate(self.armed_failures):
+                if spec.get("method") and spec["method"] != method:
+                    continue
+                if spec.get("only_reply") and "reply_to_message_id" not in body:
+                    continue
+                return self.armed_failures.pop(i)
+            return None
 
     # -- outbound message store ----------------------------------------
     def record_sent(self, chat_id, text, extra=None):
@@ -128,6 +157,7 @@ class MockTelegramState:
         with self.lock:
             self.chat_actions.append({"chat_id": chat_id,
                                       "action": action,
+                                      "t": time.monotonic(),
                                       "date": int(time.time())})
 
     # -- inbound update queue ------------------------------------------
@@ -224,10 +254,25 @@ class MockHandler(BaseHTTPRequestHandler):
             self._json(401, {"ok": False, "description": "Unauthorized: empty token"})
             return
         self.state.token = token
+        self.state.record_call(method)
 
         if self.state.bot_fail:
             self._json(500, {"ok": False,
                            "description": "mock failure mode: bot API 500"})
+            return
+        # One-shot armed failure (retry / 429 rate-limit tests): answers the
+        # request with the armed error code exactly once.
+        armed = self.state.take_armed_failure(method, body)
+        if armed is not None:
+            code = int(armed.get("code", 500))
+            payload = {"ok": False,
+                       "error_code": code,
+                       "description": armed.get(
+                           "description", "mock armed failure")}
+            retry_after = armed.get("retry_after")
+            if retry_after is not None:
+                payload["parameters"] = {"retry_after": retry_after}
+            self._json(code, payload)
             return
         if method == "getMe":
             self._json(200, {"ok": True, "result": {
@@ -364,6 +409,17 @@ class MockHandler(BaseHTTPRequestHandler):
                 except (TypeError, ValueError):
                     pass
             self._json(200, {"ok": True, "bot_delay": self.state.bot_delay})
+        elif path == "/admin/arm":
+            # Arm a one-shot failure for the next matching Bot API request:
+            # {"method": "sendMessage", "code": 429, "retry_after": 1,
+            #  "only_reply": true, "description": "..."}
+            self.state.arm_failure(body if isinstance(body, dict) else {})
+            self._json(200, {"ok": True,
+                             "armed": len(self.state.armed_failures)})
+        elif path == "/admin/arm_clear":
+            with self.state.lock:
+                self.state.armed_failures = []
+            self._json(200, {"ok": True})
         elif path == "/admin/reset":
             MockHandler.state = MockTelegramState()
             self._json(200, {"ok": True})
@@ -383,6 +439,9 @@ class MockHandler(BaseHTTPRequestHandler):
                 self.state.updates.values(), key=lambda u: u["update_id"])})
         elif path == "/admin/updates_calls":
             self._json(200, {"ok": True, "calls": self.state.get_updates_calls})
+        elif path == "/admin/calls":
+            self._json(200, {"ok": True, "calls": self.state.call_counts,
+                             "armed": len(self.state.armed_failures)})
         elif path == "/health":
             self._json(200, {"ok": True})
         else:
