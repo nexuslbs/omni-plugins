@@ -60,9 +60,10 @@
     {
       "key": "typing_interval_seconds",
       "label": "Typing indicator interval (seconds)",
-      "type": "number",
+      "type": "integer",
       "required": false,
       "default": 5,
+      "min": 0,
       "description": "At most ONE Telegram typing action (sendChatAction) per chat every N seconds, no matter how many typing requests omniagent sends (core enqueues one every 5 s while a thread runs); excess requests are dropped, never queued. Set 0 (or leave the value empty) to send NO typing signal at all. Invalid or negative values fall back to the default 5 s."
     },
     {
