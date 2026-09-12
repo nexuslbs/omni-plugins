@@ -1,0 +1,18 @@
+# prompt plugin dependencies (remote/python).
+#
+# The only pip dependency is `tiktoken`: the builtin Rust prompt plugin links
+# `tiktoken_rs` at BUILD time, so real BPE token counts are always available
+# to it. The Python port must install the equivalent package to reach the same
+# `measure_size` numbers when a deployment configures `tokenizer_encoding`
+# (e.g. "gpt-4" -> cl100k_base). Without it the plugin logs the documented
+# chars/4 fallback (identical to the Rust fallback on load failure).
+#
+# The installer creates a hermetic venv at tools/prompt/.venv and installs
+# this file (src/server/plugins_install.rs install_python_deps); server.py
+# adds that venv's site-packages (and the pip --target pylib/ fallback) to
+# sys.path at startup so the declared dependency is actually importable.
+#
+# psycopg2 is deliberately NOT listed: the omniagent runtime image provides it
+# as the system package python3-psycopg2 (same convention as tools/actions),
+# and a hermetic venv would not see it otherwise.
+tiktoken>=0.5.0

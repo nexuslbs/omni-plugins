@@ -30,8 +30,30 @@ import psycopg2
 import psycopg2.extras
 from pathlib import Path
 
-# Optional real-token measurement (parity with tiktoken_rs). When absent the
-# chars/4 fallback applies, exactly like the Rust fallback on load failure.
+# ---------------------------------------------------------------------------
+# Dependency bootstrap for the REMOTE layout. The builtin Rust prompt plugin
+# links tiktoken_rs at BUILD time, so real BPE counts are always available to
+# it; the Python port needs the equivalent package importable. The installer
+# (omniagent src/server/plugins_install.rs install_python_deps) installs
+# requirements.txt into a hermetic venv {plugin_dir}/.venv, or into
+# {plugin_dir}/pylib when venv creation is unavailable, but the runtime spawns
+# the plugin with the system python3 (mcp-config.json "python3 server.py") and
+# puts neither on sys.path - so do it here. Adding site-packages (not the venv
+# interpreter) keeps the image-provided psycopg2 importable.
+# No effect on output when tiktoken is absent: the documented chars/4 fallback
+# then applies, exactly like the Rust fallback on load failure.
+# ---------------------------------------------------------------------------
+_PLUGIN_DIR = Path(__file__).resolve().parent
+_pylib_dir = _PLUGIN_DIR / "pylib"
+if _pylib_dir.is_dir():
+    sys.path.insert(0, str(_pylib_dir))
+_venv_lib = _PLUGIN_DIR / ".venv" / "lib"
+if _venv_lib.is_dir():
+    for _site_packages in sorted(_venv_lib.glob("python*/site-packages")):
+        if _site_packages.is_dir():
+            sys.path.insert(0, str(_site_packages))
+
+# Optional real-token measurement (parity with tiktoken_rs).
 try:
     import tiktoken  # type: ignore
 except ImportError:
@@ -233,98 +255,19 @@ def build_memory_section(memory_raw, memory_max_chars):
 # Stable identity / guidance texts (exact copies of prompt_builder.rs)
 # ---------------------------------------------------------------------------
 
+_IDENTITY_TEMPLATE = (
+    "You are OmniAgent: precise, efficient, autonomous. Your tools: {tool_list}. Use minimum roundtrips. If a tool fails, move on: don't retry more than twice. HONESTY RULE: if you cannot complete the task, your final summary MUST clearly state that you gave up and why, and what remains undone - NEVER claim the task was completed unless every requested step was actually done and verified. CLEAR/DELETE DIRECTIVES: for an explicit clear/delete/set request, never report done or 'no change applied' until you have EXECUTED the change and VERIFIED the observable end state on the target environment the request names (the item is gone there, via its own API/DB/UI); 'no change applied' is valid only when you can prove the requested end state already holds. NEVER end a turn with only thinking and no action: a response with no tool call is treated as the end of the task, so every turn MUST end with either tool calls or a final answer. If you have finished thinking, immediately emit your next tool call or your final answer - never stop after reasoning alone."
+)
+
 def build_dynamic_identity(tool_names):
-    """Rust build_dynamic_identity: categorized groups + uncategorized extras
-    in input order."""
-    has_fetch = any(n == "fetch" for n in tool_names)
-    has_search = any(n.startswith("search_") for n in tool_names)
-    has_query = any(n.startswith("query_") for n in tool_names)
-    has_kanban = any(n.startswith("kanban") for n in tool_names)
-    has_cron = any(n.startswith("cron") for n in tool_names)
-    has_git = any(
-        n.startswith("commit") or n.startswith("create_github")
-        or n.startswith("clone_repo") or n == "status"
-        for n in tool_names
-    )
-    has_subtasks = any(
-        n.startswith("subtasks_") or n.startswith("manage_subtask")
-        for n in tool_names
-    )
-    has_skills = any(
-        n.startswith("create_skill") or n.startswith("list_skills")
-        for n in tool_names
-    )
-    has_plugin = any(n == "plugin_manager" or n == "list_plugins" for n in tool_names)
+    """Rust prompt_builder.rs build_dynamic_identity (HEAD).
 
-    parts = ["filesystem (read/write/list)"]
-    if has_fetch:
-        parts.append("fetch (HTTP)")
-    if has_search:
-        parts.append("search (messages/wiki)")
-    if has_query:
-        parts.append("search_database (SQL)")
-    if has_kanban:
-        parts.append("kanban")
-    if has_cron:
-        parts.append("cron")
-    if has_git:
-        parts.append("git")
-    if has_subtasks:
-        parts.append("manage_subtasks")
-    if has_skills:
-        parts.append("skills")
-    if has_plugin:
-        parts.append("plugin_manager")
-
-    def is_categorized(name):
-        return (
-            name.startswith("filesystem")
-            or name == "fetch"
-            or name.startswith("search_")
-            or name.startswith("query_")
-            or name.startswith("kanban")
-            or name.startswith("cron")
-            or name.startswith("commit")
-            or name.startswith("create_github")
-            or name.startswith("clone_repo")
-            or name == "status"
-            or name.startswith("manage_subtask")
-            or name.startswith("subtasks_")
-            or name.startswith("create_skill")
-            or name.startswith("list_skills")
-            or name == "plugin_manager"
-            or name == "list_tools_details"
-            or name == "list_tool_details"
-            or name == "compose"
-            or name.startswith("hindsight_")
-            or name.startswith("docker_")
-            or name == "promote_to_memory"
-            or name == "list_memories"
-            or name == "review_memories"
-            or name == "manage_memory"
-            or name == "search_metrics"
-            or name.startswith("setup_")
-            or name.startswith("kanban_")
-        )
-
-    extra = [n for n in tool_names if not is_categorized(n)]
-    parts.extend(extra)
-
-    tool_list = ", ".join(parts) if parts else ", ".join(tool_names)
-
-    return (
-        "You are OmniAgent: precise, efficient, autonomous. "
-        f"Your tools: {tool_list}. Use minimum roundtrips. If a tool fails, move on: "
-        "don't retry more than twice. HONESTY RULE: if you cannot complete the task, "
-        "your final summary MUST clearly state that you gave up and why, and what "
-        "remains undone - NEVER claim the task was completed unless every requested "
-        "step was actually done and verified. NEVER end a turn with only thinking and "
-        "no action: a response with no tool call is treated as the end of the task, "
-        "so every turn MUST end with either tool calls or a final answer. If you have "
-        "finished thinking, immediately emit your next tool call or your final answer "
-        "- never stop after reasoning alone."
-    )
-
+    Generic tool listing: the names come from the plugin registry ALREADY
+    fully qualified; this function must NOT know any specific tool or
+    plugin name. An empty list renders "no tools available".
+    """
+    tool_list = "no tools available" if not tool_names else ", ".join(tool_names)
+    return _IDENTITY_TEMPLATE.format(tool_list=tool_list)
 
 TOOL_GUIDANCE = (
     "TOOL USE RULES (fail the task if you violate these):\n"
@@ -335,13 +278,12 @@ TOOL_GUIDANCE = (
     "2. SEARCH FIRST: before exploring a repo or asking the operator, run "
     "`search_wiki` + `search_messages` (at most 2 retrieval calls, then act). Use "
     "search tools before querying databases for text or vector searches; use direct "
-    "data queries only for structured aggregations (counts, sums, averages, "
-    "groupings).\n"
+    "data queries only for structured aggregations (counts, sums, averages, groupings).\n"
     "3. WRITE COMPLETE FILES: When writing a file, write the entire content in a single "
     "operation. Do NOT write placeholder content expecting to fill in values afterward. "
     "EXCEPTION - LARGE OUTPUTS: if the file content is too large to fit in a single "
     "response (approaching your output token limit), split it across multiple "
-    "filesystem_write calls: first with append=false, then append=true for each "
+    "filesystem__write calls: first with append=false, then append=true for each "
     "subsequent chunk. Never abandon a large write - chunk it. Never let an output "
     "length limit cause task failure.\n"
     "4. RENAME INSTEAD OF RECREATE: When a file or directory already exists and you "
@@ -358,18 +300,36 @@ TOOL_GUIDANCE = (
     "try once more with a different approach, then move on. Do NOT retry the same "
     "failing call more than once. There is no hidden state that changes between retries.\n"
     "10. TAKE NOTES: maintain a durable working memory with the note_* tools "
-    "(notes_note-write/notes_note-append/notes_note-read/notes_note-list/notes_note-rm) after every non-trivial "
+    "(notes__note_write/notes__note_append/notes__note_read/notes__note_list/notes__note_rm) after every non-trivial "
     "discovery (paths, line numbers, commands, root causes, decisions). Notes "
     "survive compaction and thread death - the retry thread starts with them.\n"
-    "11. VERIFY-ONCE: read a file ONCE with `filesystem_read` (offset/limit paging - ONE\n"
+    "11. VERIFY-ONCE: read a file ONCE with `filesystem__read` (offset/limit paging - ONE\n"
     "call per page) and write the facts you need into your working notes; never re-read the\n"
-    "same file or line range. NEVER use `docker_compose exec ... sed -n` / `grep -n` to read\n"
-    "file contents: docker_compose is for RUNNING commands/builds, not reading files.\n"
+    "same file or line range. NEVER use `docker__compose exec ... sed -n` / `grep -n` to read\n"
+    "file contents: docker__compose is for RUNNING commands/builds, not reading files.\n"
     "Re-reading overlapping line ranges of the same file is the #1 budget killer (threads have\n"
     "died at 120/120 after 100+ sed windows with zero commits). Consult your notes, not the\n"
     "disk, when you need content again.\n"
-    "12. NEVER RE-READ CONTEXT DUMPS: a context-*.json dump is read ONCE per thread - a second read returns a '[duplicate read ...]' marker, not content. Trust the injected '=== Context Compacted ===' summary and your notes instead; re-reading dumps is a forbidden anti-loop that wastes iterations.\n"
-    "13. SUBTASKS: after planning a multi-step task, create one subtask per plan step with the subtasks tool (subtasks_manage-subtasks, action=\"add\"); as you finish each step mark its subtask completed (action=\"update\", subtask_id=N, status=\"completed\"); cancel any subtask that is no longer needed (status=\"cancelled\"); before your final answer, complete or cancel ALL subtasks so none remain pending."
+    "12. NEVER RE-READ CONTEXT DUMPS: a context-*.json dump is read ONCE per "
+    "thread - a second read returns a '[duplicate read ...]' marker, not content. "
+    "Trust the injected '=== Context Compacted ===' summary and your notes instead; "
+    "re-reading dumps is a forbidden anti-loop that wastes iterations.\n"
+    "13. SUBTASKS: after planning a multi-step task, create one subtask per plan step "
+    "with the subtasks tool (subtasks__manage_subtasks, action=\"add\"); as you finish "
+    "each step mark its subtask completed (action=\"update\", subtask_id=N, "
+    "status=\"completed\"); cancel any subtask that is no longer needed "
+    "(status=\"cancelled\"); before your final answer, complete or cancel ALL subtasks "
+    "so none remain pending.\n"
+    "14. NO-REPETITION + VERIFY-ONCE + NO-PROGRESS STOP: never re-issue a tool call "
+    "(same tool + same effective arguments/scope) whose result is already in your "
+    "context or notes when nothing relevant changed in between - including read-only "
+    "verification commands (git log/status/rev-parse, search, list, info, status). "
+    "After a state-changing operation (commit+push, file write), verify ONCE (e.g. one "
+    "git rev-parse showing local == origin/main) and move on; never re-verify an "
+    "unchanged state. If you catch yourself repeating the same checks with no state "
+    "change and no progress, STOP exploring and produce your final report of what is "
+    "done and what remains. Repeated no-progress read-only calls are blocked by the "
+    "engine and will not re-execute."
 )
 
 
@@ -1369,6 +1329,13 @@ def measure_size(messages, tokenizer_encoding):
 COMPACTION_SUMMARY_MARKER = "=== Compaction Summary ==="
 
 READ_TOOL_PREFIXES = (
+    # Current grammar `{plugin}__{tool}`.
+    "filesystem__",
+    "search__",
+    "skills__view",
+    "git__status",
+    "git__run_command",
+    # Pre-separator-flip names: the one-release alias window.
     "filesystem_read",
     "filesystem_list",
     "filesystem_search",
@@ -1382,8 +1349,18 @@ READ_TOOL_PREFIXES = (
 )
 
 
-def is_read_type_tool(name):
+def legacy_read_type_tool(name):
     return any(name.startswith(p) for p in READ_TOOL_PREFIXES)
+
+
+def is_read_type_tool(name, settings):
+    """Descriptor-driven read-type check (audit V-2): when the core supplies
+    the declared read-only tools, THAT set decides; otherwise the legacy
+    prefix list is used as a fallback."""
+    read_only = settings.get("read_only_tools") or []
+    if read_only:
+        return name in read_only
+    return legacy_read_type_tool(name)
 
 
 # --- dump.rs: context-<iter>.json digests ---
@@ -1422,7 +1399,7 @@ def append_dump(dir_path, iter_num, tool, args, content):
         "chars": chars,
         "head": head,
         "tail": tail,
-    }, ensure_ascii=False)
+    }, separators=(",", ":"), ensure_ascii=False)
 
     try:
         with open(file_path, "a") as f:
@@ -1582,7 +1559,7 @@ def compact_old_assistant_messages(messages, keep_recent, thread_dir, current_it
                                 break
                         if append_dump(thread_dir, current_iteration, tool_name, args, tm.get("content", "")):
                             dump_entries += 1
-                        if is_read_type_tool(tool_name):
+                        if is_read_type_tool(tool_name, settings):
                             note_append(
                                 thread_dir,
                                 "auto-notes.md",
@@ -1597,7 +1574,7 @@ def compact_old_assistant_messages(messages, keep_recent, thread_dir, current_it
             total_excerpt = 0
             for tm in messages[i + 1:tool_end]:
                 tool_name = tm.get("name") or ""
-                is_read = is_read_type_tool(tool_name)
+                is_read = is_read_type_tool(tool_name, settings)
                 excerpt_chars = settings["read_excerpt_chars"] if is_read else settings["tool_excerpt_chars"]
                 content_preview = tm.get("content", "")[:excerpt_chars]
                 chunk_len = len(content_preview)
@@ -1650,6 +1627,18 @@ def compact_old_assistant_messages(messages, keep_recent, thread_dir, current_it
         del messages[drain_start + 1:drain_end + 1]
 
     return removed, dump_file, dump_entries
+
+
+def read_only_tool_names(args):
+    """Read-only tool names declared by the plugin descriptors (audit V-2).
+
+    The core passes the registry-derived set; a missing/empty argument means
+    an older core, in which case the legacy prefix list is used as fallback.
+    """
+    raw = args.get("read_only_tools")
+    if not isinstance(raw, list):
+        return []
+    return [v for v in raw if isinstance(v, str)]
 
 
 def handle_compact_messages(req_id, arguments):
@@ -1719,13 +1708,23 @@ def handle_compact_messages(req_id, arguments):
         current_iteration = int(args.get("current_iteration") or 0)
 
         tokenizer_encoding = cfg.get("tokenizer_encoding", "")
+        # Engine override (Rust main.rs L1785-1800): when the core's post-call
+        # provider usage shows the context is still over the hard budget (the
+        # local measure can under-count versus the provider tokenizer), the
+        # core re-invokes us with force_compact=true so the gate cannot
+        # silently under-trigger (0-compaction incident, threads 1139/1140).
+        # Force skips the threshold check and compacts toward the soft budget
+        # whenever drainable turns exist; null-contract otherwise preserved.
+        # Boolean-only, exactly like args["force_compact"].as_bool().
+        force_compact = args.get("force_compact") is True
         before = len(messages)
         dump_file = None
         entries = 0
 
         current_size = measure_size(messages, tokenizer_encoding)
-        if current_size > hard_budget:
+        if force_compact or current_size > hard_budget:
             settings = {
+                "read_only_tools": read_only_tool_names(args),
                 "tool_excerpt_chars": cfg.get("tool_excerpt_chars", 800),
                 "total_excerpt_cap": cfg.get("total_excerpt_cap", 4000),
                 "read_excerpt_chars": cfg.get("read_excerpt_chars", 2000),

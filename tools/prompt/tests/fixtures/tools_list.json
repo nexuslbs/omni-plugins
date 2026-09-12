@@ -1,0 +1,81 @@
+[
+  {
+    "name": "prompt_generate",
+    "description": "Generate the complete LLM prompt for a conversation, including system prompt (identity, tool guidance, memory, user profile), thread context (recent messages, summaries, skills, subtasks), and optional planning instructions. Returns the full prompt as a JSON string. This is the single source of truth for prompt building: no other prompt assembly is needed.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "profile_name": {
+          "type": "string",
+          "description": "Profile name (default: omni)"
+        },
+        "platform": {
+          "type": "string",
+          "description": "Platform identifier (e.g. 'telegram', 'mattermost')"
+        },
+        "platform_hint": {
+          "type": "string",
+          "description": "Formatting hint declared by the platform plugin's initialize capabilities (audit V-5). Optional: when absent a named platform falls back to a generic markdown note."
+        },
+        "system_message": {
+          "type": "string",
+          "description": "Optional system message override"
+        },
+        "user_message": {
+          "type": "string",
+          "description": "User's message to include in the prompt"
+        },
+        "tool_names": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "List of available tool names"
+        },
+        "thread_id": {
+          "type": "integer",
+          "description": "Thread ID for context assembly (recent messages, subtasks)"
+        },
+        "channel_id": {
+          "type": "string",
+          "description": "Channel name for context assembly (summaries)"
+        },
+        "plan": {
+          "type": "boolean",
+          "description": "Plan mode suggestion: true=plan, false=no plan, null=let plugin decide based on config"
+        }
+      },
+      "required": []
+    }
+  },
+  {
+    "name": "prompt_compact-messages",
+    "description": "Compact and prune a conversation to stay within token budgets. REQUIRES 'soft_budget'/'hard_budget' token params (resolved per-thread by the omniagent; chars/4 fallback when no tokenizer). Compacts ONLY when the hard budget is exceeded (null-contract otherwise): drains the oldest tool-call turns into ONE frozen '=== Compaction Summary ===' block right after the system prompt, keeps recent turns verbatim, excerpts older read-type results and auto-notes them (auto-notes.md in thread_dir). The returned messages array must keep the prefix byte-stable; only the tail may change. Returns the compacted message array or null.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "messages": {
+          "type": "array",
+          "description": "Array of ChatMessage objects to compact"
+        },
+        "keep_recent": {
+          "type": "integer",
+          "description": "Number of most recent messages to always keep (default: 3)"
+        },
+        "soft_budget": {
+          "type": "integer",
+          "description": "Required soft token budget: the reduction target when the hard budget is exceeded"
+        },
+        "hard_budget": {
+          "type": "integer",
+          "description": "Required hard token budget: compaction/pruning triggers when the context exceeds it"
+        }
+      },
+      "required": [
+        "messages",
+        "soft_budget",
+        "hard_budget"
+      ]
+    }
+  }
+]
