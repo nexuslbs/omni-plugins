@@ -66,6 +66,14 @@ providers:
   # Test provider - built-in fake responses without HTTP calls or API keys.
   # default_base_url points at the noop-provider container server
   # (omni-stack services/noop), which is separate from any plugin file.
+  #
+  # Consistency with providers/: `providers/noop` is a bare manifest (no
+  # entrypoint/code) kept ONLY so the deploy test harness can install it via
+  # install-git; this plugin-less definition is the authoritative code-less
+  # provider and is what serves requests when no plugin is installed/enabled
+  # (both definitions declare the same base_url/api_mode/model list).
+  # `providers/noop-full` is NOT code-less (real stdio client.py) and therefore
+  # intentionally has NO entry here.
   noop:
     plugin: false
     api_mode: "chat_completions"
