@@ -250,6 +250,16 @@ def run(args):
                     "user_message": "implement a multi-step redesign of the parity harness",
                     "plan": False,
                 }),
+                ("generate-plan-true", {
+                    "thread_id": args.thread_id,
+                    "channel_id": args.channel_id,
+                    "profile_name": args.profile,
+                    "user_message": "build a multi-step parity matrix for the prompt plugin",
+                    "plan": True,
+                    "tool_names": ["filesystem__read", "filesystem__write", "git__status",
+                                   "prompt__generate"],
+                    "platform": "mattermost",
+                }),
             ]:
                 rust_err, rust_text = rust.call_tool("prompt_generate", arguments)
                 py_err, py_text = py.call_tool("prompt_generate", arguments)

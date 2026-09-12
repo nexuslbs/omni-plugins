@@ -65,7 +65,7 @@ docker exec -w /opt/workspace/omni-plugins/tools/prompt omnidev-omniagent-1 \
 ```
 
 Case families: `tools/list`, `prompt_generate` (plain, platform hint,
-tool-name list, tool descriptors, complex message, plan/no-plan), and
+tool-name list, tool descriptors, complex message, plan=default/true/false), and
 `prompt_compact-messages` (under/over budget, descriptor-driven read tools,
 lexical read tools, force override, missing budgets, tokenizer encoding,
 dump/auto-notes artifacts).
