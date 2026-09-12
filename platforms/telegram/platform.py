@@ -455,17 +455,37 @@ class TelegramPlatform:
         # replaced by the terminal emoji (e.g. the check mark) when the
         # thread finishes. This supersedes the earlier accumulate behavior
         # (commit 866b1d6) which kept the +1 forever.
-        try:
-            reaction = [{"type": "emoji", "emoji": emoji}]
+        # ROBUSTNESS (2026-09-12): Telegram only accepts emojis from its own
+        # fixed reaction set; anything else answers "REACTION_INVALID". If the
+        # API rejects the mapped emoji we must NEVER drop the update and NEVER
+        # leave the stale +1 on the message: retry ONCE with the
+        # guaranteed-valid DEFAULT_EMOJI and log it at WARNING level.
+        def _send(candidate):
             self._api_post("setMessageReaction", {
                 "chat_id": chat_id,
                 "message_id": external_id,
-                "reaction": json.dumps(reaction),
+                "reaction": json.dumps([{"type": "emoji", "emoji": candidate}]),
             })
+
+        try:
+            _send(emoji)
         except TelegramApiError as e:
-            log.error("react failed: %s", e)
-            self._respond(req_id, error={"code": -2, "message": str(e)})
-            return
+            if emoji == DEFAULT_EMOJI:
+                log.error("react failed (even the default %s): %s", emoji, e)
+                self._respond(req_id, error={"code": -2, "message": str(e)})
+                return
+            log.warning(
+                "Reaction %s rejected by Telegram for status %r (%s) - "
+                "falling back to the valid default %s",
+                emoji, raw, e, DEFAULT_EMOJI,
+            )
+            try:
+                _send(DEFAULT_EMOJI)
+            except TelegramApiError as e2:
+                log.error("react fallback failed: %s", e2)
+                self._respond(req_id, error={"code": -2, "message": str(e2)})
+                return
+            emoji = DEFAULT_EMOJI
         self._respond(req_id, result={"reacted": True})
         log.info("Reacted %s to message %s in chat %s (replaced prior "
                  "reaction)", emoji, external_id, resource)
@@ -650,29 +670,43 @@ class TelegramPlatform:
 # envelope and never maps it to an emoji or to a Mattermost shortcode. The
 # status -> reaction mapping is OWNED BY THIS PLUGIN: Telegram's
 # setMessageReaction takes a unicode emoji, not a shortcode.
+# ONLY emojis from Telegram's allowed setMessageReaction set may appear here.
+# VERIFIED against the REAL Bot API (2026-09-12, bot @omnilbsbot, production
+# token) with one setMessageReaction call per candidate; the API answered
+# "Bad Request: REACTION_INVALID" for \u2705 (0x2705), \u274c (0x274C) and
+# \U0001f17e\ufe0f (0x1F17E), which is why completed/failed/skipped never
+# replaced the +1 before. Valid in the same probe: 1F44D, 1F91D, 1F494,
+# 1F440, 2764, 1F525, 1F389, 1F4AF, 1F3C6, 1F64F, 1F914, 1F622, 1F921,
+# 1F634, 1F937, 1F44C, 1FAE1, 1F44E, 1F929.
+# (Also rejected: 1F5D1, 26D4, 26A0, 1F6D1, 1F480, 1F916.)
+# tests/mock_telegram_api.py validates every value against the same set.
 STATUS_TO_EMOJI = {
-    "pending": "\U0001f44d",
-    "processing": "\U0001f44d",
-    "completed": "\u2705",
-    "failed": "\u274c",
-    "interrupted": "\U0001f494",
-    "skipped": "\U0001f17e\ufe0f",
-    "merged": "\U0001f91d",
+    "pending": "\U0001f44d",       # 1F44D  thumbs up (+1 on arrival)
+    "processing": "\U0001f44d",    # 1F44D  thumbs up (+1 on arrival)
+    "completed": "\U0001f3c6",     # 1F3C6  trophy (the check mark is INVALID)
+    "failed": "\U0001f622",        # 1F622  crying face (the cross mark is INVALID)
+    "interrupted": "\U0001f494",   # 1F494  broken heart
+    "skipped": "\U0001f937",       # 1F937  shrug (the O symbol is INVALID)
+    "merged": "\U0001f91d",        # 1F91D  handshake
 }
 
 # DEFAULT reaction for a status with no explicit mapping (e.g. a NEW thread
 # status added later): the plugin must still react - never drop the reaction,
-# never error. \U0001f440 is the "eyes" emoji.
+# never error. \U0001f440 ("eyes") is in Telegram's valid reaction set, so it
+# also serves as the REACTION_INVALID fallback in handle_react.
 DEFAULT_EMOJI = "\U0001f440"
 
 # Legacy (rollout window only): Mattermost-style emoji shortcodes sent by an
 # OLDER core that still mapped status -> shortcode itself. Mapped to their
-# unicode glyphs so an old core keeps working until it is upgraded.
+# unicode glyphs so an old core keeps working until it is upgraded. The glyphs
+# come from the same verified VALID set as STATUS_TO_EMOJI.
 SHORTCODE_TO_EMOJI = {
-    ":white_check_mark:": "\u2705",
-    ":x:": "\u274c",
+    ":white_check_mark:": "\U0001f3c6",
+    ":heavy_check_mark:": "\U0001f3c6",
+    ":x:": "\U0001f622",
+    ":cross_mark:": "\U0001f622",
     ":broken_heart:": "\U0001f494",
-    ":o:": "\U0001f17e\ufe0f",
+    ":o:": "\U0001f937",
     ":handshake:": "\U0001f91d",
     ":+1:": "\U0001f44d",
     ":thumbsup:": "\U0001f44d",

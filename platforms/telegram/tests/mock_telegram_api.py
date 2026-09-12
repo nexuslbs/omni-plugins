@@ -36,6 +36,35 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
 
+# Emojis the REAL Telegram Bot API accepts in setMessageReaction. VERIFIED
+# against the production bot token on 2026-09-12 with one API call per
+# candidate; anything outside this set answers
+# "Bad Request: REACTION_INVALID". The mock enforces the same rule because the
+# old mock accepted ANY emoji: that is why the suite stayed green while
+# production never replaced the +1 on completed/failed/skipped threads.
+VALID_REACTION_EMOJIS = {
+    "\U0001f44d",  # 1F44D thumbs up
+    "\U0001f44e",  # 1F44E thumbs down
+    "\u2764",       # 2764  heart
+    "\U0001f525",  # 1F525 fire
+    "\U0001f389",  # 1F389 party
+    "\U0001f4af",  # 1F4AF hundred
+    "\U0001f3c6",  # 1F3C6 trophy
+    "\U0001f64f",  # 1F64F pray
+    "\U0001f914",  # 1F914 thinking
+    "\U0001f622",  # 1F622 crying
+    "\U0001f921",  # 1F921 clown
+    "\U0001f634",  # 1F634 sleeping
+    "\U0001f937",  # 1F937 shrug
+    "\U0001f44c",  # 1F44C ok hand
+    "\U0001fae1",  # 1FAE1 saluting face
+    "\U0001f929",  # 1F929 star struck
+    "\U0001f494",  # 1F494 broken heart
+    "\U0001f91d",  # 1F91D handshake
+    "\U0001f440",  # 1F440 eyes (plugin default)
+}
+
+
 class MockTelegramState:
     """Thread-safe in-memory state shared by all handler threads."""
 
@@ -51,6 +80,10 @@ class MockTelegramState:
         self.token = None            # last-seen token (any non-empty accepted)
         self.bot_fail = False      # when True every /bot<token>/* POST returns HTTP 500
         self.bot_delay = 0.0      # seconds each sendMessage sleeps (slow-API simulation)
+        # Emojis this mock accepts in setMessageReaction. Defaults to the real
+        # Telegram reaction set; /admin/reaction_allow can narrow it to
+        # simulate a REJECTED (invalid) mapping.
+        self.valid_reaction_emojis = set(VALID_REACTION_EMOJIS)
 
     # -- outbound message store ----------------------------------------
     def record_sent(self, chat_id, text, extra=None):
@@ -267,9 +300,27 @@ class MockHandler(BaseHTTPRequestHandler):
                 return
             self._json(200, {"ok": True, "result": {"ok": True}})
         elif method == "setMessageReaction":
+            raw = body.get("reaction")
+            try:
+                parsed = json.loads(raw) if isinstance(raw, str) else (raw or [])
+            except (TypeError, ValueError):
+                parsed = None
+            if parsed is None:
+                self._json(400, {"ok": False,
+                                 "description": "Bad Request: can't parse reaction"})
+                return
+            rejected = [r.get("emoji") for r in parsed
+                        if r.get("type") == "emoji"
+                        and r.get("emoji") not in self.state.valid_reaction_emojis]
+            if rejected:
+                # Mirror the REAL Bot API: an emoji outside Telegram's reaction
+                # set is rejected with REACTION_INVALID (incident 2026-09-12).
+                self._json(400, {"ok": False,
+                                 "description": "Bad Request: REACTION_INVALID"})
+                return
             self.state.record_reaction(body.get("chat_id"),
                                        body.get("message_id"),
-                                       body.get("reaction"))
+                                       raw)
             self._json(200, {"ok": True, "result": {"ok": True}})
         elif method == "sendChatAction":
             self.state.record_chat_action(body.get("chat_id"),
@@ -291,6 +342,17 @@ class MockHandler(BaseHTTPRequestHandler):
         elif path == "/admin/updates":
             self._json(200, {"ok": True, "updates": sorted(
                 self.state.updates.values(), key=lambda u: u["update_id"])})
+        elif path == "/admin/reaction_allow":
+            # Narrow (or reset) the accepted reaction emojis. Body
+            # {"emojis": [...]} narrows the set; an empty body resets it to the
+            # real Telegram reaction set. Used to exercise the REACTION_INVALID
+            # fallback without patching the plugin.
+            if isinstance(body, dict) and "emojis" in body:
+                self.state.valid_reaction_emojis = set(body.get("emojis") or [])
+            else:
+                self.state.valid_reaction_emojis = set(VALID_REACTION_EMOJIS)
+            self._json(200, {"ok": True,
+                             "emojis": sorted(self.state.valid_reaction_emojis)})
         elif path == "/admin/fail":
             if isinstance(body, dict) and "on" in body:
                 self.state.bot_fail = bool(body.get("on"))

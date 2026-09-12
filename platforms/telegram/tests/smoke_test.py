@@ -400,10 +400,10 @@ def main():
         #      new terminal emoji (never accumulated).
         for status, expected in [
             ("processing", "\U0001f44d"),
-            ("completed", "\u2705"),
+            ("completed", "\U0001f3c6"),
             ("interrupted", "\U0001f494"),
-            ("failed", "\u274c"),
-            ("skipped", "\U0001f17e\ufe0f"),
+            ("failed", "\U0001f622"),
+            ("skipped", "\U0001f937"),
             ("merged", "\U0001f91d"),
         ]:
             r = plat.call("deliver", {
@@ -468,10 +468,10 @@ def main():
         #      shortcodes in `emoji`; they keep working.
         for shortcode, expected in [
             (":+1:", "\U0001f44d"),
-            (":white_check_mark:", "\u2705"),
-            (":x:", "\u274c"),
+            (":white_check_mark:", "\U0001f3c6"),
+            (":x:", "\U0001f622"),
             (":broken_heart:", "\U0001f494"),
-            (":o:", "\U0001f17e\ufe0f"),
+            (":o:", "\U0001f937"),
             (":handshake:", "\U0001f91d"),
             (":thumbsup:", "\U0001f44d"),
         ]:
@@ -513,9 +513,77 @@ def main():
         check(
             reactions
             and [e["emoji"] for e in json.loads(reactions[-1]["reaction"])]
-            == ["\u2705"],
+            == ["\U0001f3c6"],
             "status field takes precedence over the legacy emoji field",
         )
+
+        # 6b6. TELEGRAM-VALIDITY (2026-09-12): the mock now REJECTS any emoji
+        #      outside the real Telegram reaction set (REACTION_INVALID), so
+        #      this loop fails if any mapped status emoji is not a valid
+        #      Telegram reaction - the exact bug that kept the +1 on
+        #      completed/failed/skipped threads.
+        for status, expected in [
+            ("pending", "\U0001f44d"),
+            ("processing", "\U0001f44d"),
+            ("completed", "\U0001f3c6"),
+            ("failed", "\U0001f622"),
+            ("interrupted", "\U0001f494"),
+            ("skipped", "\U0001f937"),
+            ("merged", "\U0001f91d"),
+        ]:
+            r = plat.call("deliver", {
+                "resource_identifier": "123456789",
+                "content": "Validity " + status,
+            })
+            ext_v = r.get("result", {}).get("external_id")
+            r = plat.call("react", {
+                "resource_identifier": "123456789",
+                "external_id": ext_v,
+                "status": status,
+            })
+            check(r.get("result", {}).get("reacted") is True,
+                  "status " + status + " -> reacted:true (accepted emoji)")
+            reactions = http_get(base + "/admin/reactions").get("reactions", [])
+            check(
+                reactions
+                and [e["emoji"] for e in json.loads(reactions[-1]["reaction"])]
+                == [expected],
+                status + " maps to a Telegram-VALID reaction emoji",
+            )
+
+        # 6b7. REACTION_INVALID fallback: narrow the mock to accept ONLY the
+        #      default emoji, so the "completed" mapping (trophy) is REJECTED
+        #      the way the live API rejects an invalid emoji. The plugin must
+        #      NOT drop the transition and NOT leave the stale +1: it retries
+        #      with the valid default and still answers reacted:true.
+        http_post(base + "/admin/reaction_allow", {"emojis": ["\U0001f440"]})
+        r = plat.call("deliver", {
+            "resource_identifier": "123456789",
+            "content": "Invalid-reaction fallback target",
+        })
+        ext_f = r.get("result", {}).get("external_id")
+        r = plat.call("react", {
+            "resource_identifier": "123456789",
+            "external_id": ext_f,
+            "status": "processing",
+        })
+        check(r.get("result", {}).get("reacted") is True,
+              "processing reaction on the fallback target")
+        r = plat.call("react", {
+            "resource_identifier": "123456789",
+            "external_id": ext_f,
+            "status": "completed",
+        })
+        check(r.get("result", {}).get("reacted") is True,
+              "REACTION_INVALID -> reacted:true via default fallback")
+        reactions = http_get(base + "/admin/reactions").get("reactions", [])
+        check(
+            reactions
+            and [e["emoji"] for e in json.loads(reactions[-1]["reaction"])]
+            == ["\U0001f440"],
+            "rejected emoji -> valid DEFAULT reaction (stale +1 replaced)",
+        )
+        http_post(base + "/admin/reaction_allow", {})   # restore the real set
 
         # 6c. typing -> sendChatAction (action=typing)
         r = plat.call("typing", {"resource_identifier": "123456789"})
