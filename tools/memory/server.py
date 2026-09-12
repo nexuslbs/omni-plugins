@@ -3,16 +3,18 @@
 
 Tools:
   - promote_to_memory: promote a validated fact to long-term memory by
-              writing <OMNI_DIR>/profiles/<profile>/wiki/Memory/Promoted/<name>.md
-              with frontmatter (type, confidence, source_message_ids,
-              source_tool_outputs, last_verified_at, created_at, expires_at).
+             writing <OMNI_DIR>/profiles/<profile>/wiki/Memory/Promoted/<name>.md
+             with frontmatter (type, confidence, source_message_ids,
+             source_tool_outputs, last_verified_at, created_at, expires_at).
   - list_memories: list promoted memories (filenames, titles, confidence,
-              expiry dates), optionally including expired ones.
+             expiry dates), optionally including expired ones.
   - review_memories: expiry report for promoted memories (expired / expiring
-              soon / valid).
+             soon / valid).
   - manage_memory: add/remove/clean entries in a profile's MEMORY.md / USER.md.
-  - generate_summary: generate a channel summary from completed threads since
-              the last summary (defensive: never crashes, returns a message).
+  - save_summary: persist a channel summary as a NEW row in the summaries
+             table (channel_id = channel NAME, next_thread_id = watermark,
+             content = the summary markdown). The caller produces the text
+             (the agent/LLM); this tool only stores it.
 
 MCP JSON-RPC over stdio (mirrors tools/prompt/server.py). Requires OMNI_DIR
 and DATABASE_URL env vars. Profile always comes from meta.profile_name.
@@ -24,13 +26,11 @@ import re
 import sys
 import logging
 import datetime as dt
-import urllib.request
-import urllib.error
 from pathlib import Path
 
 try:
     import psycopg2
-except Exception:  # pragma: no cover - handled defensively in generate_summary
+except Exception:  # pragma: no cover - handled defensively in save_summary
     psycopg2 = None
 
 logging.basicConfig(
@@ -274,167 +274,76 @@ def handle_manage(args, meta):
         filepath.unlink()
     return make_tool_result(f"{fname} cleared: all entries removed (profile: {profile}).")
 
+
 # --------------------------------------------------------------------------
-# generate_summary (defensive: must never crash a thread)
+# save_summary (defensive: must never crash a thread)
 # --------------------------------------------------------------------------
 
-def extract_summary_text(raw):
-    """Best-effort extraction of the summary text from an /api/llm/chat response."""
-    if not raw:
-        return ""
-    try:
-        data = json.loads(raw)
-    except ValueError:
-        return raw.strip()
-    if isinstance(data, dict):
-        choices = data.get("choices")
-        if isinstance(choices, list) and choices:
-            c = choices[0]
-            if isinstance(c, dict):
-                msg = c.get("message")
-                if isinstance(msg, dict) and msg.get("content"):
-                    return str(msg["content"])
-                if c.get("text"):
-                    return str(c["text"])
-        if data.get("content"):
-            return str(data["content"])
-        if data.get("error"):
-            log.warning("LLM returned error: %s", data["error"])
-            return ""
-    return raw.strip()
+def db_connect():
+    """Open a psycopg2 connection from DATABASE_URL.
 
-
-def _generate_summary_impl(args, meta):
-    raw_cid = args.get("channel_id")
-    if raw_cid is None:
-        return make_tool_result("generate_summary requires 'channel_id'", True)
-    try:
-        channel_id = int(raw_cid)
-    except (TypeError, ValueError):
-        return make_tool_result(f"invalid channel_id: {raw_cid}", True)
-
-    provider = cfg_env("SUMMARY_PROVIDER", "summary_provider")
-    model = cfg_env("SUMMARY_MODEL", "summary_model")
-    if not provider or not model:
-        return make_tool_result(
-            "Summarization not configured: set summary_provider and summary_model in memory plugin config")
-
+    Returns (conn, None) on success, or (None, error_message) on failure.
+    """
     if psycopg2 is None:
-        return make_tool_result("generate_summary error: psycopg2 is not available", True)
-    db_url = os.environ.get("DATABASE_URL", "")
+        return None, "psycopg2 is not available"
+    db_url = os.environ.get("DATABASE_URL") or cfg_env("database_url")
+    if not db_url:
+        return None, "DATABASE_URL is not set"
     try:
-        conn = psycopg2.connect(db_url)
+        return psycopg2.connect(db_url), None
     except Exception as e:
-        return make_tool_result(f"generate_summary error: cannot connect to database: {e}", True)
+        return None, f"cannot connect to database: {e}"
 
-    try:
-        try:
-            summarize_after_days = int(cfg_env("SUMMARIZE_AFTER_DAYS", "summarize_after_days") or 7)
-            window = int(cfg_env("SUMMARY_WINDOW", "summary_window") or 10)
-            max_tokens = int(cfg_env("CHANNEL_SUMMARY_TOKENS", "channel_summary_tokens") or 4096)
-        except (TypeError, ValueError):
-            summarize_after_days, window, max_tokens = 7, 10, 4096
-        trigger_count = summarize_after_days * 2
 
-        cur = conn.cursor()
-        # 1. since_id = next_thread_id of the latest summary (0 if none)
-        cur.execute(
-            "SELECT next_thread_id FROM summaries WHERE channel_id=%s ORDER BY next_thread_id DESC LIMIT 1",
-            (channel_id,))
-        row = cur.fetchone()
-        since_id = int(row[0]) if row and row[0] else 0
-
-        # 2. completed seq0 threads since last summary
-        cur.execute(
-            "SELECT id FROM threads WHERE channel_id=%s AND status='completed' AND id>%s "
-            "AND parent_id IS NULL ORDER BY id ASC LIMIT %s",
-            (channel_id, since_id, trigger_count))
-        threads = [int(r[0]) for r in cur.fetchall()]
-        if len(threads) < trigger_count:
-            return make_tool_result(
-                f"Not enough completed threads to summarize (need {trigger_count}, have {len(threads)}). Skipping.")
-        pivot = threads[min(window, len(threads)) - 1]
-
-        # 3. previous summary for continuity
-        cur.execute(
-            "SELECT content FROM summaries WHERE channel_id=%s ORDER BY next_thread_id DESC LIMIT 1",
-            (channel_id,))
-        prow = cur.fetchone()
-        prev_summary = str(prow[0]) if prow and prow[0] else ""
-
-        # 4. gather thread messages (skip tool/tool-result, truncate to 1000 chars)
-        role_map = {"user": "User", "assistant": "Assistant", "system": "System"}
-        all_content = []
-        for tid in threads:
-            cur.execute(
-                "SELECT role, msg_type, content FROM messages WHERE thread_id=%s ORDER BY id ASC",
-                (tid,))
-            msgs = cur.fetchall()
-            parts = [f"\n=== Thread #{tid} ==="]
-            for role, mtype, content in msgs:
-                if mtype in ("tool", "tool-result", "tool_result"):
-                    continue
-                rd = role_map.get(role, role if role else "Unknown")
-                text = content if content else ""
-                if len(text) > 1000:
-                    text = text[:1000]
-                parts.append(f"{rd}: {text}")
-            all_content.append("\n".join(parts))
-        convo = "\n".join(all_content)
-
-        # 5. build summarizer prompt and call the LLM proxy
-        system_prompt = (
-            "You are the channel summarizer. Your job is to produce a concise structured summary "
-            "of the conversations below. Return ONLY the summary in markdown, no preamble.\n\n"
-            "Rules:\n"
-            "- Cover key decisions, findings, and action items.\n"
-            "- Preserve important facts, numbers, and names.\n"
-            "- Use clear markdown structure (headings, bullets).\n"
-            f"- Keep the summary under {max_tokens} tokens."
-        )
-        user_prompt = (
-            f"Previous summary:\n{prev_summary or 'None'}\n\n"
-            f"Conversations to summarize:\n{convo}\n\n"
-            "Generate the summary now."
-        )
-        body = json.dumps({
-            "provider": provider,
-            "model": model,
-            "messages": [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt},
-            ],
-            "max_tokens": max_tokens,
-            "temperature": 0.2,
-        }).encode("utf-8")
-        req = urllib.request.Request(
-            "http://localhost:8080/api/llm/chat",
-            data=body,
-            headers={"content-type": "application/json"},
-        )
-        try:
-            with urllib.request.urlopen(req, timeout=120) as resp:
-                raw = resp.read().decode("utf-8", errors="replace")
-        except urllib.error.HTTPError as e:
-            return make_tool_result(f"generate_summary error: LLM proxy returned HTTP {e.code}: {e.read().decode(errors='replace')[:500]}", True)
-        except urllib.error.URLError as e:
-            return make_tool_result(f"generate_summary error: cannot reach LLM proxy: {e}", True)
-
-        summary = extract_summary_text(raw)
-        if not summary:
-            return make_tool_result(f"generate_summary error: empty LLM response: {raw[:500]}", True)
-
-        # 6. persist
-        cur.execute(
-            "INSERT INTO summaries (channel_id, thread_id_start, thread_id_end, next_thread_id, content) "
-            "VALUES (%s,%s,%s,%s,%s)",
-            (channel_id, threads[0], threads[-1], pivot, summary))
-        conn.commit()
+def _save_summary_impl(args, meta):
+    # channel_id is the channel NAME (text), exactly what summaries.channel_id
+    # holds - NOT a numeric id and NOT a platform channel id.
+    raw_cid = args.get("channel_id")
+    if raw_cid is None or not str(raw_cid).strip():
         return make_tool_result(
-            f"Summary generated for channel {channel_id}: {len(threads)} threads (pivot={pivot}).")
+            "save_summary requires 'channel_id': the channel NAME (e.g. 'main'), not a numeric id", True)
+    channel_id = str(raw_cid).strip()
+
+    # next_thread_id is the highest thread id covered by this summary; the
+    # next summary run continues after it (same semantics as the hook
+    # watermark and queries::create_summary in the omniagent runtime).
+    raw_next = args.get("next_thread_id")
+    if raw_next is None or (isinstance(raw_next, str) and not raw_next.strip()):
+        return make_tool_result(
+            "save_summary requires 'next_thread_id': the highest thread id covered by the summary", True)
+    try:
+        next_thread_id = int(raw_next)
+    except (TypeError, ValueError):
+        return make_tool_result(f"invalid next_thread_id '{raw_next}': must be an integer", True)
+
+    raw_content = args.get("content")
+    if raw_content is None or not str(raw_content).strip():
+        return make_tool_result("save_summary requires non-empty 'content' (the summary markdown)", True)
+    content = str(raw_content)
+
+    conn, err = db_connect()
+    if conn is None:
+        return make_tool_result(f"save_summary error: {err}", True)
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "INSERT INTO summaries (channel_id, next_thread_id, content) VALUES (%s,%s,%s) "
+            "RETURNING id, channel_id, next_thread_id, created_at",
+            (channel_id, next_thread_id, content))
+        row = cur.fetchone()
+        conn.commit()
+        summary_id, cid, nti, created = row
+        created_s = created.isoformat() if hasattr(created, "isoformat") else str(created)
+        return make_tool_result(
+            f"Summary saved: id={summary_id}, channel_id={cid}, next_thread_id={nti}, "
+            f"created_at={created_s} ({len(content)} chars)")
     except Exception as e:
-        log.exception("generate_summary impl failed")
-        return make_tool_result(f"generate_summary error: {e}", True)
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        log.exception("save_summary insert failed")
+        return make_tool_result(f"save_summary error: {e}", True)
     finally:
         try:
             conn.close()
@@ -442,13 +351,13 @@ def _generate_summary_impl(args, meta):
             pass
 
 
-def handle_generate_summary(args, meta):
+def handle_save_summary(args, meta):
     """Top-level defensive wrapper: never lets an exception escape."""
     try:
-        return _generate_summary_impl(args, meta)
+        return _save_summary_impl(args, meta)
     except Exception as e:  # last line of defense
-        log.exception("generate_summary crashed")
-        return make_tool_result(f"generate_summary error: {e}", True)
+        log.exception("save_summary crashed")
+        return make_tool_result(f"save_summary error: {e}", True)
 
 
 # --------------------------------------------------------------------------
@@ -517,14 +426,22 @@ TOOLS = [
         },
     },
     {
-        "name": "generate_summary",
-        "description": "Generate a cross-thread summary for a channel. Queries completed threads since the last summary, fetches messages, calls the LLM for structured summarization, and persists the result.",
+        "name": "save_summary",
+        "description": "Save a channel summary as a NEW row in the summaries table. This tool only PERSISTS text the caller has already produced (the agent/LLM writes the summary); it does not generate it. "
+                       "channel_id is the channel NAME (e.g. 'main'), stored verbatim in summaries.channel_id: NOT a numeric channel id and NOT the platform channel id. "
+                       "next_thread_id is the highest thread id covered by this summary (the next summary run continues after it), stored verbatim in summaries.next_thread_id. "
+                       "Returns the new summary id. All three arguments are required.",
         "inputSchema": {
             "type": "object",
             "properties": {
-                "channel_id": {"type": "integer", "description": "Channel ID to generate summary for"},
+                "channel_id": {"type": "string",
+                               "description": "Channel NAME whose history this summary covers (e.g. 'main'). Stored verbatim in summaries.channel_id. NOT a numeric id."},
+                "next_thread_id": {"type": "integer",
+                                   "description": "Highest thread id covered by this summary; the next summary run starts after it. Stored verbatim in summaries.next_thread_id."},
+                "content": {"type": "string",
+                            "description": "The summary markdown to store in summaries.content. Must be non-empty."},
             },
-            "required": ["channel_id"],
+            "required": ["channel_id", "next_thread_id", "content"],
         },
     },
 ]
@@ -534,7 +451,7 @@ HANDLERS = {
     "list_memories": handle_list,
     "review_memories": handle_review,
     "manage_memory": handle_manage,
-    "generate_summary": handle_generate_summary,
+    "save_summary": handle_save_summary,
 }
 
 

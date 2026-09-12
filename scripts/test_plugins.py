@@ -264,7 +264,7 @@ EXPECTED_TOOLS = {
     "exec": ["exec_run", "exec_approve"],
     "hindsight": ["recall", "reflect", "retain"],
     "llm-response-hygiene": ["classify"],
-    "memory": ["list", "review", "promote", "manage", "summary"],
+    "memory": ["list", "review", "promote", "manage", "save_summary"],
     "paperclip": ["paperclip"],
     "prompt": ["generate", "compact"],
     "test-js-tool": ["wait", "echo", "save", "error"],
