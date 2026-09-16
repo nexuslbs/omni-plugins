@@ -19,15 +19,20 @@
 
 providers:
   # DeepSeek API provider - OpenAI-compatible chat completions.
+  # LIVE model list (GET https://api.deepseek.com/v1/models, verified
+  # 2026-09-16): ONLY `deepseek-flash` and `deepseek-v4-pro` exist.
+  # `deepseek-flash` IS "v4.1 flash"; the API REJECTS `deepseek-v4-flash`,
+  # `deepseek-v3` and `deepseek-r1` ("supported API model names are
+  # deepseek-flash, deepseek-v4-pro"), so they must not be offered here.
   deepseek:
     plugin: false
     api_mode: "chat_completions"
     supports_reasoning: true
     default_base_url: "https://api.deepseek.com/v1"
     refresh_url: "https://api.deepseek.com/v1/models"
-    default_model: "deepseek-v4-flash"
+    default_model: "deepseek-flash"
     api_key: "$secret:DEEPSEEK_API_KEY"
-    models: ["deepseek-v4-flash", "deepseek-v3", "deepseek-r1", "deepseek-v4-pro"]
+    models: ["deepseek-flash", "deepseek-v4-pro"]
 
   # OpenAI API provider - OpenAI-compatible chat completions.
   openai:
@@ -57,11 +62,15 @@ providers:
     # Custom request headers (typed values, resolved by core at request time):
     # x-opencode-session carries the current channel name so OpenCode Go can
     # attribute and optimize traffic per session. The core client always sends
-    # a User-Agent identifying omniagent on top of this.
+    # a User-Agent identifying omniagent on top of this. REQUIRED: this
+    # `headers: x-opencode-session: {type: channel}` block must stay - without
+    # it the gateway cannot attribute traffic per session.
     headers:
       x-opencode-session:
         type: channel
-    models: ["deepseek-v4-flash"]
+    # Live model list (GET https://opencode.ai/zen/go/v1/models, verified
+    # 2026-09-16; refreshable via refresh_url).
+    models: ["minimax-m3", "minimax-m2.7", "minimax-m2.5", "kimi-k3", "kimi-k2.7-code", "kimi-k2.6", "longcat-2.0", "kimi-k2.5", "glm-5.2", "glm-5.3-flash", "glm-5.3", "glm-5.1", "glm-5", "deepseek-v4-pro", "deepseek-v4-flash", "deepseek-flash", "deepseek-v4.1-flash", "deepseek-v4-flash-vision-exp", "qwen3.7-max", "qwen3.8-max", "qwen3.8-flash", "qwen3.7-plus", "qwen3.6-plus", "qwen3.5-plus", "mimo-v2-pro", "mimo-v2-omni", "mimo-v2.5-pro", "mimo-v2.5", "hy4-preview", "hy3", "union-alpha", "hy3-preview", "gpt-5.6-luna", "grok-4.5", "grok-4.6", "muse-spark-1.3-contributor", "muse-spark-1.2-contributor", "omen-alpha"]
 
   # Test provider - built-in fake responses without HTTP calls or API keys.
   # default_base_url points at the noop-provider container server
