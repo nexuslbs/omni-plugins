@@ -154,13 +154,26 @@ class QdrantClient:
             if offset is None or not points:
                 return
 
-    def search(self, name, vector, limit=10, score_threshold=None, path_prefix=None):
-        """Similarity search. Returns a list of hit dicts {id, score, payload}."""
+    def search(self, name, vector, limit=10, score_threshold=None, path_prefix=None,
+               filters=None):
+        """Similarity search. Returns a list of hit dicts {id, score, payload}.
+
+        `path_prefix` is a legacy convenience for the wiki corpus (match on the
+        payload `path` field). `filters` is a list of Qdrant condition dicts
+        (e.g. {"key": "channel_id", "match": {"value": "omnidev"}} or a
+        {"key": ..., "range": {...}} for numeric fields) ANDed together; used
+        by the messages tools for channel/thread/time filters.
+        """
         base = {"limit": int(limit), "with_payload": True}
         if score_threshold is not None:
             base["score_threshold"] = float(score_threshold)
+        conditions = []
         if path_prefix:
-            base["filter"] = {"must": [{"key": "path", "match": {"text": path_prefix}}]}
+            conditions.append({"key": "path", "match": {"text": path_prefix}})
+        if filters:
+            conditions.extend(filters)
+        if conditions:
+            base["filter"] = {"must": conditions}
 
         last_error = None
         for suffix in _QUERY_PATHS:

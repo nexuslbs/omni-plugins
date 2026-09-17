@@ -12,3 +12,10 @@
 #
 #   fastembed>=0.4,<1
 #
+# The messages tools (semantic_search__messages / semantic_search_messages_index)
+# additionally need psycopg2 to read the omniagent messages table (SELECT-only).
+# It is present in the omniagent runtime image, so it is listed as an optional
+# dependency here - the wiki-only tools keep working without it.
+#
+#   psycopg2-binary>=2.9,<3
+#

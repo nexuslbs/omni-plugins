@@ -2,7 +2,7 @@
   "name": "semantic_search",
   "version": "0.1.0",
   "type": "mcp",
-  "description": "Local semantic search over the profile wiki, backed by Qdrant. The plugin computes embeddings itself with a LOCAL vectorizer (feature-hashing by default, optional in-process fastembed/ONNX model) - no LLM and no embedding API is ever called. Provides semantic_search (ranked hits with provenance) and semantic_search_index (idempotent corpus index build).",
+  "description": "Local semantic search over the profile wiki AND the channel messages, backed by Qdrant. The plugin computes embeddings itself with a LOCAL vectorizer (feature-hashing by default, optional in-process fastembed/ONNX model) - no LLM and no embedding API is ever called. Provides semantic_search (wiki hits with provenance), semantic_search_index (idempotent wiki index), semantic_search__messages (message hits with channel/thread/author/date context), semantic_search_messages_index (read-only DB indexing) and stats tools.",
   "config_schema": [
     {
       "key": "qdrant_url",
@@ -87,6 +87,41 @@
       "type": "integer",
       "default": 10,
       "description": "Default number of hits returned by semantic_search."
+    },
+    {
+      "key": "database_url",
+      "label": "Database URL",
+      "type": "string",
+      "default": "$env:DATABASE_URL",
+      "description": "Postgres URL of the omniagent database, read with SELECT-only access by the messages indexing tools (never written to). Defaults to the DATABASE_URL environment variable."
+    },
+    {
+      "key": "messages_collection",
+      "label": "Messages Collection",
+      "type": "string",
+      "default": "messages_semantic",
+      "description": "Qdrant collection name holding the embedded channel messages."
+    },
+    {
+      "key": "exclude_msg_types",
+      "label": "Excluded Message Types",
+      "type": "string",
+      "default": "tool-result,multi-tool,tool,prompt,reasoning,plan",
+      "description": "Comma-separated msg_type values excluded from the messages index (agent-internal bookkeeping noise)."
+    },
+    {
+      "key": "messages_max_chars",
+      "label": "Max Chars per Message",
+      "type": "integer",
+      "default": 2000,
+      "description": "Messages longer than this are truncated (with a marker) before embedding."
+    },
+    {
+      "key": "messages_min_chars",
+      "label": "Min Chars per Message",
+      "type": "integer",
+      "default": 8,
+      "description": "Messages shorter than this are not indexed."
     }
   ]
 }

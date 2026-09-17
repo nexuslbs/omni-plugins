@@ -8,7 +8,8 @@
       "env": {
         "OMNI_DIR": "$env:OMNI_DIR",
         "QDRANT_URL": "$env:QDRANT_URL",
-        "QDRANT_API_KEY": "$env:QDRANT_API_KEY"
+        "QDRANT_API_KEY": "$env:QDRANT_API_KEY",
+        "DATABASE_URL": "$env:DATABASE_URL"
       },
       "timeout_secs": 900,
       "max_retries": 1,

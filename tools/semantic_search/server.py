@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""semantic_search MCP server - LOCAL semantic search over the profile wiki.
+"""semantic_search MCP server - LOCAL semantic search over the profile wiki
+and the channel messages.
 
 Tools:
   - semantic_search: ranked semantic hits (path, heading, line range, score,
@@ -7,10 +8,18 @@ Tools:
     are reported explicitly; no hit is ever fabricated.
   - semantic_search_index: (re)build the Qdrant index of the wiki corpus with
     the LOCAL vectorizer (idempotent, stale points removed).
+  - semantic_search__messages: ranked semantic hits over channel messages
+    (snippet + channel/thread/role/date attribution) with optional filters
+    (channel_id, thread_id, since/until).
+  - semantic_search_messages_index: (re)build the Qdrant index of the
+    messages table (read-only SELECTs; idempotent upserts, stale points
+    pruned on full runs).
+  - semantic_search_messages_stats: status of the messages index.
 
 Embeddings are computed in-process by a local backend (see se_embed.py): no
 LLM, no embedding API, no external service is contacted - the only network
-endpoint used is the configured Qdrant server.
+endpoint used is the configured Qdrant server. The messages tools read the
+omniagent database with SELECT statements only; the plugin never writes to it.
 
 MCP JSON-RPC over stdio. Config comes from plugin config (injected as env
 vars) or, when running standalone, from the environment.
@@ -22,8 +31,10 @@ import os
 import sys
 
 from se_corpus import discover_files, display_path, resolve_roots
+from se_db import MessageSourceError, source_from_config
 from se_embed import EMBED_DIM, EmbedderError, make_embedder
 from se_index import build_chunks, index_corpus
+from se_messages import index_messages, parse_iso_ts, search_messages
 from se_qdrant import QdrantClient, QdrantCollectionMissing, QdrantError, QdrantUnreachable
 
 logging.basicConfig(
@@ -105,6 +116,14 @@ def load_config(meta=None, args=None):
         "batch_size": cfg_int("batch_size", 64, minimum=1),
         "timeout_secs": cfg_int("timeout_secs", 20, minimum=1),
         "default_limit": cfg_int("default_limit", 10, minimum=1),
+        "database_url": cfg("database_url", "DATABASE_URL"),
+        "messages_collection": cfg("messages_collection", default="messages_semantic"),
+        "exclude_msg_types": split_list(
+            cfg("exclude_msg_types",
+                default="tool-result,multi-tool,tool,prompt,reasoning,plan"),
+            ["tool-result", "multi-tool", "tool", "prompt", "reasoning", "plan"]),
+        "messages_max_chars": cfg_int("messages_max_chars", 2000, minimum=200),
+        "messages_min_chars": cfg_int("messages_min_chars", 8, minimum=0),
     }
 
 
@@ -235,6 +254,172 @@ def _semantic_search_stats_impl(args, meta):
     }, indent=2))
 
 
+def _redact_database_url(url):
+    """Strip the password from a postgres URL before it is shown in stats."""
+    if not url:
+        return ""
+    try:
+        from urllib.parse import urlsplit, urlunsplit
+        parts = urlsplit(url)
+        if parts.password:
+            host = parts.hostname or ""
+            netloc = host
+            if parts.port:
+                netloc = "%s:%s" % (host, parts.port)
+            if parts.username:
+                netloc = "%s@%s" % (parts.username, netloc)
+            return urlunsplit((parts.scheme, netloc, parts.path, parts.query, parts.fragment))
+    except Exception:
+        pass
+    return url
+
+
+def _semantic_search_messages_impl(args, meta):
+    query = str(args.get("query", "") or "").strip()
+    if not query:
+        return make_tool_result("semantic_search__messages requires a non-empty 'query'", True)
+    config = load_config(meta, args)
+    try:
+        limit = int(args.get("limit") or config["default_limit"])
+    except (TypeError, ValueError):
+        limit = config["default_limit"]
+    limit = max(1, min(limit, 100))
+    try:
+        since = parse_iso_ts(args.get("since"))
+        until = parse_iso_ts(args.get("until"))
+    except ValueError as exc:
+        return make_tool_result("semantic_search__messages error: %s" % exc, True)
+    embedder = get_embedder(config)
+    client = make_client(config)
+    try:
+        hits = search_messages(client, embedder, config, query, limit=limit,
+                               score_threshold=args.get("min_score"),
+                               channel_id=args.get("channel_id"),
+                               thread_id=args.get("thread_id"),
+                               since=since, until=until)
+    except QdrantUnreachable as exc:
+        return make_tool_result(
+            "semantic message search unavailable (qdrant unreachable): %s - no results returned" % exc, True)
+    except QdrantCollectionMissing as exc:
+        return make_tool_result(
+            "messages index empty, run semantic_search_messages_index (%s)" % exc)
+    except QdrantError as exc:
+        return make_tool_result("semantic message search unavailable (qdrant error): %s" % exc, True)
+
+    if not hits:
+        count = 0
+        try:
+            count = client.point_count(config["messages_collection"])
+        except QdrantError:
+            pass
+        if count == 0:
+            return make_tool_result(
+                "messages index empty, run semantic_search_messages_index (collection '%s' has no points)"
+                % config["messages_collection"])
+        return make_tool_result(
+            "No semantic hits for '%s' in collection '%s' (%d point(s) indexed, backend=%s)."
+            % (query, config["messages_collection"], count, embedder.backend))
+
+    lines = ["%d semantic message hit(s) for '%s' [collection=%s backend=%s dim=%d]"
+             % (len(hits), query, config["messages_collection"], embedder.backend, embedder.dim)]
+    for rank, hit in enumerate(hits, start=1):
+        payload = hit.get("payload") or {}
+        snippet = " ".join((payload.get("content") or "").split())
+        ctx = "#%s %s" % (payload.get("message_id", "?"), payload.get("channel_id", "?"))
+        if payload.get("thread_id") is not None:
+            ctx += " thread=%s" % payload["thread_id"]
+        ctx += " role=%s date=%s" % (payload.get("role", "?"), payload.get("created_at", "?"))
+        lines.append("%d. score=%.4f  %s" % (rank, hit["score"], ctx))
+        lines.append("   %s" % (snippet[:400] + ("..." if len(snippet) > 400 else "")))
+    return make_tool_result("\n".join(lines))
+
+
+def _semantic_search_messages_index_impl(args, meta):
+    config = load_config(meta, args)
+    progress = []
+    try:
+        embedder = get_embedder(config)
+    except EmbedderError as exc:
+        return make_tool_result("semantic_search_messages_index error: %s" % exc, True)
+    client = make_client(config)
+    try:
+        client.health()
+    except QdrantUnreachable as exc:
+        return make_tool_result(
+            "semantic message search unavailable (qdrant unreachable): %s - index NOT updated" % exc, True)
+    except QdrantError as exc:
+        return make_tool_result("semantic_search_messages_index error: %s" % exc, True)
+
+    collection = config["messages_collection"]
+    if args.get("rebuild") and client.collection_exists(collection):
+        client.delete_collection(collection)
+        progress.append("dropped collection '%s' (rebuild requested)" % collection)
+
+    # Scoped filters: channel(s), since/until (ISO-8601 or epoch), row limit.
+    # Scoped runs are upsert-only; only a FULL run prunes stale points.
+    scoped = {}
+    channels = args.get("channels") or args.get("channel_id")
+    if isinstance(channels, str) and channels:
+        channels = [c.strip() for c in channels.split(",") if c.strip()]
+    if channels:
+        scoped["_index_channels"] = channels
+    try:
+        if args.get("since"):
+            scoped["_index_since"] = parse_iso_ts(args.get("since"))
+        if args.get("until"):
+            scoped["_index_until"] = parse_iso_ts(args.get("until"))
+    except ValueError as exc:
+        return make_tool_result("semantic_search_messages_index error: %s" % exc, True)
+    if args.get("limit"):
+        try:
+            scoped["_index_limit"] = max(1, int(args.get("limit")))
+        except (TypeError, ValueError):
+            pass
+    config = dict(config)
+    config.update(scoped)
+
+    try:
+        source = source_from_config(config)
+        index_messages(source, embedder, client, config, config["profile"], log=progress.append)
+    except MessageSourceError as exc:
+        return make_tool_result("semantic_search_messages_index error: %s" % exc, True)
+    except QdrantUnreachable as exc:
+        return make_tool_result(
+            "semantic message search unavailable (qdrant unreachable): %s - index NOT updated" % exc, True)
+    except (QdrantError, EmbedderError) as exc:
+        return make_tool_result("semantic_search_messages_index error: %s" % exc, True)
+    progress.append("LOCAL vectorizer: backend=%s dim=%d (no LLM/embedding API called)"
+                    % (embedder.backend, embedder.dim))
+    return make_tool_result("\n".join(progress))
+
+
+def _semantic_search_messages_stats_impl(args, meta):
+    config = load_config(meta, args)
+    client = make_client(config)
+    try:
+        info = client.collection_info(config["messages_collection"])
+    except QdrantUnreachable as exc:
+        return make_tool_result(
+            "semantic message search unavailable (qdrant unreachable): %s" % exc, True)
+    except QdrantCollectionMissing as exc:
+        return make_tool_result("messages index empty, run semantic_search_messages_index (%s)" % exc)
+    except QdrantError as exc:
+        return make_tool_result("semantic_search_messages_index error: %s" % exc, True)
+    embedder = get_embedder(config)
+    return make_tool_result(json.dumps({
+        "collection": config["messages_collection"],
+        "points": info.get("points_count"),
+        "vector_size": client.vector_size(config["messages_collection"]),
+        "backend": embedder.backend,
+        "backend_dim": embedder.dim,
+        "qdrant_url": config["qdrant_url"],
+        "database_url": _redact_database_url(config["database_url"])
+                        or "(unset - falls back to $env:DATABASE_URL)",
+        "exclude_msg_types": config["exclude_msg_types"],
+        "messages_max_chars": config["messages_max_chars"],
+    }, indent=2))
+
+
 def handle_search(args, meta):
     try:
         return _semantic_search_impl(args, meta)
@@ -257,6 +442,30 @@ def handle_stats(args, meta):
     except Exception as exc:
         log.exception("semantic_search_stats crashed")
         return make_tool_result("semantic_search_stats error: %s" % exc, True)
+
+
+def handle_messages_search(args, meta):
+    try:
+        return _semantic_search_messages_impl(args, meta)
+    except Exception as exc:
+        log.exception("semantic_search__messages crashed")
+        return make_tool_result("semantic_search__messages error: %s" % exc, True)
+
+
+def handle_messages_index(args, meta):
+    try:
+        return _semantic_search_messages_index_impl(args, meta)
+    except Exception as exc:
+        log.exception("semantic_search_messages_index crashed")
+        return make_tool_result("semantic_search_messages_index error: %s" % exc, True)
+
+
+def handle_messages_stats(args, meta):
+    try:
+        return _semantic_search_messages_stats_impl(args, meta)
+    except Exception as exc:
+        log.exception("semantic_search_messages_stats crashed")
+        return make_tool_result("semantic_search_messages_stats error: %s" % exc, True)
 
 
 # --------------------------------------------------------------------------
@@ -306,12 +515,76 @@ TOOLS = [
                        "count, vector size, active local embedding backend and corpus roots.",
         "inputSchema": {"type": "object", "properties": {}},
     },
+    {
+        "name": "semantic_search__messages",
+        "description": "Semantic search over channel messages (Qdrant + LOCAL vectorizer; no LLM "
+                       "or embedding API call). Returns ranked hits with message id, channel, "
+                       "thread, role, timestamp and a content snippet. Optional filters: "
+                       "channel_id, thread_id, since/until (ISO-8601 or epoch seconds), "
+                       "min_score. Degrades explicitly: 'unavailable (qdrant unreachable)' or "
+                       "'messages index empty, run semantic_search_messages_index' - never a "
+                       "fabricated hit.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "Natural-language search query"},
+                "limit": {"type": "integer", "description": "Max hits (default 10, max 100)"},
+                "channel_id": {"type": "string",
+                                "description": "Optional filter: only messages from this channel"},
+                "thread_id": {"type": "integer",
+                               "description": "Optional filter: only messages from this thread"},
+                "since": {"type": "string",
+                           "description": "Optional lower bound: ISO-8601 timestamp or epoch seconds"},
+                "until": {"type": "string",
+                           "description": "Optional upper bound: ISO-8601 timestamp or epoch seconds"},
+                "min_score": {"type": "number",
+                               "description": "Optional minimum similarity score (0..1)"},
+            },
+            "required": ["query"],
+        },
+    },
+    {
+        "name": "semantic_search_messages_index",
+        "description": "Build or refresh the semantic-search index over the omniagent messages "
+                       "table. Reads the DB with SELECT statements only (never writes to it), "
+                       "embeds each message with the LOCAL vectorizer and upserts to Qdrant. "
+                       "Idempotent: re-running over the same messages keeps the same points. A "
+                       "FULL run prunes points whose messages no longer exist; scoped runs "
+                       "(channels/since/until/limit) are upsert-only.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "channels": {"type": "array", "items": {"type": "string"},
+                               "description": "Optional: only index messages from these channels"},
+                "channel_id": {"type": "string",
+                                "description": "Optional: only index messages from this channel"},
+                "since": {"type": "string",
+                           "description": "Optional lower bound: ISO-8601 timestamp or epoch seconds"},
+                "until": {"type": "string",
+                           "description": "Optional upper bound: ISO-8601 timestamp or epoch seconds"},
+                "limit": {"type": "integer",
+                           "description": "Optional row cap for scoped runs"},
+                "rebuild": {"type": "boolean",
+                             "description": "Drop the collection first for a clean rebuild"},
+            },
+        },
+    },
+    {
+        "name": "semantic_search_messages_stats",
+        "description": "Report the messages semantic-search index status: Qdrant URL, "
+                       "collection, point count, vector size, active local embedding backend, "
+                       "excluded msg types and max indexed chars per message.",
+        "inputSchema": {"type": "object", "properties": {}},
+    },
 ]
 
 HANDLERS = {
     "semantic_search": handle_search,
     "semantic_search_index": handle_index,
     "semantic_search_stats": handle_stats,
+    "semantic_search__messages": handle_messages_search,
+    "semantic_search_messages_index": handle_messages_index,
+    "semantic_search_messages_stats": handle_messages_stats,
 }
 
 
@@ -403,8 +676,41 @@ def cli(argv):
         result = _semantic_search_impl(args, meta)
     elif len(argv) >= 2 and argv[1] in ("stats", "status"):
         result = _semantic_search_stats_impl({}, meta)
+    elif len(argv) >= 3 and argv[1] in ("messages-search", "ms"):
+        args = {"query": argv[2]}
+        for i, token in enumerate(argv):
+            if token == "--limit" and i + 1 < len(argv):
+                args["limit"] = argv[i + 1]
+            if token == "--channel" and i + 1 < len(argv):
+                args["channel_id"] = argv[i + 1]
+            if token == "--thread" and i + 1 < len(argv):
+                args["thread_id"] = argv[i + 1]
+            if token == "--since" and i + 1 < len(argv):
+                args["since"] = argv[i + 1]
+            if token == "--until" and i + 1 < len(argv):
+                args["until"] = argv[i + 1]
+        result = _semantic_search_messages_impl(args, meta)
+    elif len(argv) >= 2 and argv[1] in ("messages-index", "mi"):
+        args = {}
+        if "--rebuild" in argv:
+            args["rebuild"] = True
+        for i, token in enumerate(argv):
+            if token == "--channels" and i + 1 < len(argv):
+                args["channels"] = argv[i + 1]
+            if token == "--since" and i + 1 < len(argv):
+                args["since"] = argv[i + 1]
+            if token == "--until" and i + 1 < len(argv):
+                args["until"] = argv[i + 1]
+            if token == "--limit" and i + 1 < len(argv):
+                args["limit"] = argv[i + 1]
+        result = _semantic_search_messages_index_impl(args, meta)
+    elif len(argv) >= 2 and argv[1] in ("messages-stats", "ms-stats"):
+        result = _semantic_search_messages_stats_impl({}, meta)
     else:
-        print("usage: server.py index [--rebuild] | search <query> [--limit N] | stats")
+        print("usage: server.py [index [--rebuild] | search <query> [--limit N] | stats | "
+              "messages-search <query> [--limit N] [--channel C] [--thread T] "
+              "[--since ISO] [--until ISO] | messages-index [--channels C1,C2] "
+              "[--since ISO] [--until ISO] [--limit N] [--rebuild] | messages-stats]")
         return 2
     print(result["content"][0]["text"])
     return 1 if result.get("isError") else 0
