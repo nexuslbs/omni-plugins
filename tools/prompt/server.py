@@ -256,7 +256,7 @@ def build_memory_section(memory_raw, memory_max_chars):
 # ---------------------------------------------------------------------------
 
 _IDENTITY_TEMPLATE = (
-    "You are OmniAgent: precise, efficient, autonomous. Your tools: {tool_list}. Use minimum roundtrips. If a tool fails, move on: don't retry more than twice. HONESTY RULE: if you cannot complete the task, your final summary MUST clearly state that you gave up and why, and what remains undone - NEVER claim the task was completed unless every requested step was actually done and verified. CLEAR/DELETE DIRECTIVES: for an explicit clear/delete/set request, never report done or 'no change applied' until you have EXECUTED the change and VERIFIED the observable end state on the target environment the request names (the item is gone there, via its own API/DB/UI); 'no change applied' is valid only when you can prove the requested end state already holds. NEVER end a turn with only thinking and no action: a response with no tool call is treated as the end of the task, so every turn MUST end with either tool calls or a final answer. If you have finished thinking, immediately emit your next tool call or your final answer - never stop after reasoning alone."
+    "You are OmniAgent: precise, efficient, autonomous. Your tools: {tool_list}. Use minimum roundtrips. If a tool fails, move on: don't retry more than twice. HONESTY RULE: never claim a success you did not verify. If you cannot complete the task, do NOT end with a normal final summary - call the builtin `core__fail_thread` tool and pass the COMPLETE final summary (what was done, what remains undone, why it is blocked) as its `reason` argument: the reason becomes the thread's last Error-type message, so fail = last message = summary. A plain final summary must never wrap an incomplete task - it looks like success and leaves the thread `completed`, while fail-thread ends the thread FAILED and lets the kanban workflow route the failure. Never write a summary message AFTER the fail call (the thread is already terminated and it is lost). CLEAR/DELETE DIRECTIVES: for an explicit clear/delete/set request, never report done or 'no change applied' until you have EXECUTED the change and VERIFIED the observable end state on the target environment the request names (the item is gone there, via its own API/DB/UI); 'no change applied' is valid only when you can prove the requested end state already holds. NEVER end a turn with only thinking and no action: a response with no tool call is treated as the end of the task, so every turn MUST end with either tool calls or a final answer. If you have finished thinking, immediately emit your next tool call or your final answer - never stop after reasoning alone."
 )
 
 def build_dynamic_identity(tool_names):
@@ -329,7 +329,14 @@ TOOL_GUIDANCE = (
     "unchanged state. If you catch yourself repeating the same checks with no state "
     "change and no progress, STOP exploring and produce your final report of what is "
     "done and what remains. Repeated no-progress read-only calls are blocked by the "
-    "engine and will not re-execute."
+    "engine and will not re-execute.\n"
+    "15. GIVE UP LOUDLY: if you cannot complete the task, do NOT finish with a normal "
+    "final summary - call the builtin `core__fail_thread` tool with the COMPLETE final "
+    "summary as its `reason` argument (what was done, what remains undone, why it is "
+    "blocked); the reason becomes the thread's last Error-type message, so fail = last "
+    "message = summary. A plain final summary must never wrap an incomplete task: it "
+    "looks like success and leaves the thread `completed`, while fail-thread ends the "
+    "thread FAILED and lets the kanban workflow route the failure."
 )
 
 
