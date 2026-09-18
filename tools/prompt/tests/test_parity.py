@@ -265,6 +265,37 @@ class GuidanceGrammarParity(unittest.TestCase):
                              f"legacy tool name {name!r} still in TOOL_GUIDANCE")
 
 
+class GiveUpLoudlyParity(unittest.TestCase):
+    """2026-09-18 (task_omnidev_honesty_rule_in_the_system_prompt): a give-up
+    MUST call core__fail_thread - a plain final summary must never wrap an
+    incomplete task (it looks like success and leaves the thread `completed`).
+    Guards the Python copy against silently drifting away from the Rust one."""
+
+    def test_identity_mandates_fail_thread(self):
+        identity = server.build_dynamic_identity([])
+        self.assertIn(
+            "HONESTY RULE: never claim a success you did not verify", identity,
+            "identity lost the new HONESTY RULE opening")
+        self.assertIn(
+            "core__fail_thread", identity,
+            "identity must name the core__fail_thread tool a give-up has to call")
+        self.assertIn(
+            "Never write a summary message AFTER the fail call", identity,
+            "identity must forbid a summary message after the fail call")
+
+    def test_old_give_up_wording_is_gone(self):
+        identity = server.build_dynamic_identity([])
+        self.assertNotIn(
+            "your final summary MUST clearly state", identity,
+            "the old give-up wording (plain final summary) is still present")
+
+    def test_guidance_carries_rule_15_give_up_loudly(self):
+        self.assertIn("15. GIVE UP LOUDLY", server.TOOL_GUIDANCE,
+                      "TOOL_GUIDANCE lost rule 15 (give up loudly)")
+        self.assertIn("core__fail_thread", server.TOOL_GUIDANCE,
+                      "rule 15 must name core__fail_thread")
+
+
 class ReadToolDetectionParity(unittest.TestCase):
     """c78e874 (prefix list) + 1d29f3b (descriptor-driven, fail-closed)."""
 
