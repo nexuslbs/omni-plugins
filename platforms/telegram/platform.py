@@ -408,6 +408,10 @@ class TelegramPlatform:
                     # Telegram Bot API style commands only: `$new` is NOT a
                     # command here because this plugin declares what it accepts.
                     "new": ["/new"],
+                    # Inbound stop prompt command: stops the channel's
+                    # pending/processing threads (scoped to the thread family
+                    # when sent as a reply inside a thread).
+                    "stop": ["/stop"],
                 },
             },
         })
