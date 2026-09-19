@@ -45,7 +45,8 @@ name inside the omni docker network; the dev overlay publishes host port
 > This wrapper therefore implements the agreed contract above with
 > `tool_path = /api/tool/call`; if/when workbench exposes a real invocation
 > route, only `tool_path` changes (a config value, no code change). Closing the
-> gap is workbench-side work (a companion task on the `workbench` board).
+> gap is workbench-side work, tracked as `task_workbench_workbench_expose_a_by_name_tool`
+> on the `workbench` board (channel `workbench`).
 
 ### Observed live in omnidev (2026-09-19)
 
