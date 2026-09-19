@@ -94,6 +94,18 @@ references use `$env:VAR` / `$secret:NAME` (never a literal `${VAR}`).
 Node >= 18 (global `fetch` + `AbortController`), stdio JSON-RPC like
 `tools/test-js-tool/server.js`. **No npm dependencies.**
 
+## Test harness
+
+`test/mcp-workbench.test.js` (zero deps, Node >= 18) runs `server.js` over stdio
+against a local stub HTTP server and asserts the whole contract: one tool with
+the declared schema, exactly one byte-exact `POST {base_url}{tool_path}`, the
+pretty-printed text content, the error paths (404/500, connection refused,
+`AbortController` timeout, JSON-RPC `-32602`) and 150 concurrent calls.
+
+```bash
+node test/mcp-workbench.test.js    # exit 0 = all PASS
+```
+
 ## Local smoke test
 
 ```bash
