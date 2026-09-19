@@ -46,6 +46,9 @@ tools:
   web:
     url: https://github.com/nexuslbs/omni-plugins.git
     path: tools/web
+  workbench:
+    url: https://github.com/nexuslbs/omni-plugins.git
+    path: tools/workbench
 platforms:
   telegram:
     url: https://github.com/nexuslbs/omni-plugins.git

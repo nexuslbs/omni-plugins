@@ -1,0 +1,36 @@
+{
+  "name": "workbench",
+  "version": "0.1.0",
+  "type": "mcp",
+  "description": "Thin fetch wrapper over the workbench HTTP API: one MCP tool `workbench__tool` taking {tool, params} and POSTing {\"tool\":..., \"params\":...} to base_url + tool_path (default http://workbench:8080). No business logic, no SDK, no state.",
+  "config_schema": [
+    {
+      "key": "base_url",
+      "label": "Workbench Base URL",
+      "type": "string",
+      "default": "http://workbench:8080",
+      "description": "Base URL of the workbench HTTP API (the compose service DNS name http://workbench:8080 inside the omni docker network; the dev overlay publishes host port 12347)."
+    },
+    {
+      "key": "tool_path",
+      "label": "Tool Path",
+      "type": "string",
+      "default": "/api/tool/call",
+      "description": "Path appended to base_url for a tool invocation; the request is POST {base_url}{tool_path} with body {\"tool\": <tool>, \"params\": <params>}."
+    },
+    {
+      "key": "timeout_secs",
+      "label": "HTTP Timeout (s)",
+      "type": "integer",
+      "default": 60,
+      "description": "HTTP timeout in seconds for one workbench call (AbortController); a timeout returns a clear isError result, never a hang."
+    },
+    {
+      "key": "auth_header",
+      "label": "Authorization Header",
+      "type": "string",
+      "default": "",
+      "description": "Optional Authorization header value (e.g. \"Bearer $secret:WORKBENCH_TOKEN\"). Empty = no Authorization header is sent."
+    }
+  ]
+}
