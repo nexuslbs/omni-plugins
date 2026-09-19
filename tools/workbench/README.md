@@ -44,8 +44,23 @@ name inside the omni docker network; the dev overlay publishes host port
 > are invoked through the CLI registry (`workbench <command> [args...]`).
 > This wrapper therefore implements the agreed contract above with
 > `tool_path = /api/tool/call`; if/when workbench exposes a real invocation
-> route, only `tool_path` changes (a config value, no code change). The gap is
-> tracked as a companion change on the `workbench` board.
+> route, only `tool_path` changes (a config value, no code change). Closing the
+> gap is workbench-side work (a companion task on the `workbench` board).
+
+### Observed live in omnidev (2026-09-19)
+
+- `GET http://workbench:12347/health` -> `200`. In the dev stack the workbench
+  answers on `12347` while `http://workbench:8080` does not answer from the
+  omniagent container, so the **dev plugin config overrides**
+  `base_url = http://workbench:12347`; the shipped default stays
+  `http://workbench:8080` (the compose `WORKBENCH_PORT` default).
+- `GET http://workbench:12347/api/web/pages` -> `200` (the `web@1` contract and
+  its route list).
+- `POST http://workbench:12347/api/tool/call` -> `404
+  {"status":"not found","method":"POST","path":"/api/tool/call"}` - the
+  workbench router's own not-found envelope, which the wrapper forwards
+  verbatim as `isError: true` (`GET /api/tools`, `/api/commands`, `/api/routes`
+  and `/openapi.json` are `404` as well).
 
 ## Response handling
 
