@@ -97,6 +97,7 @@ DEFAULT_CONFIG = {
     "compact_max_passes": 3,
     "compact_keep_step": 1,
     "max_summary_chars": 50000,
+    "compact_headroom_tokens": 2000,
 }
 
 # Values sent via an MCP "configure" message (the builtin receives config
@@ -116,6 +117,7 @@ INT_KEYS = {
     "compact_max_passes",
     "compact_keep_step",
     "max_summary_chars",
+    "compact_headroom_tokens",
 }
 STR_KEYS = {
     "planning_complexity_keywords",
@@ -1335,6 +1337,132 @@ def measure_size(messages, tokenizer_encoding):
 
 COMPACTION_SUMMARY_MARKER = "=== Compaction Summary ==="
 
+# --- Deterministic shrink fallback (mirrors Rust main.rs) -------------------
+
+# Minimum content size (chars) the truncation fallback leaves in a message:
+# below this the truncation marker alone would dominate, so the message is
+# skipped and the next-largest candidate is tried.
+SHRINK_MIN_CHARS = 1000
+
+# Absolute bound on truncation rounds. Each round reduces the largest eligible
+# message by at least the marker cost, so the loop always terminates.
+SHRINK_MAX_ROUNDS = 24
+
+# Last-resort floor (chars) per message: when the per-message floors of the
+# readable stage sum above the target, eligible messages are cut to a stub.
+SHRINK_FLOOR_CHARS = 200
+
+
+def truncation_marker(removed_chars):
+    """Marker inserted where content was cut (byte-identical to Rust)."""
+    return (
+        "\n[... {} chars truncated by the context compactor to fit the prompt "
+        "token budget; the full text is in the thread context-*.json dump / "
+        "auto-notes.md ...]\n"
+    ).format(removed_chars)
+
+
+def truncate_middle(content, keep_head, keep_tail):
+    """Keep head+tail chars, cut the middle. Returns (new_content, dropped)."""
+    total = len(content)
+    if total <= keep_head + keep_tail + len(truncation_marker(0)):
+        return content, 0
+    removed = total - keep_head - keep_tail
+    return content[:keep_head] + truncation_marker(removed) + content[total - keep_tail:], removed
+
+
+def message_chars(m):
+    """Size of a message as the compactor sees it (content + tool-call args)."""
+    calls = 0
+    for tc in (m.get("tool_calls") or []):
+        fn = tc.get("function", {}) if isinstance(tc, dict) else {}
+        calls += len(str(fn.get("name", ""))) + len(str(fn.get("arguments", "")))
+    return len(str(m.get("content", ""))) + calls
+
+
+def is_shrinkable(m, idx, newest_idx, last_user_idx, first_system_idx):
+    """May this message's CONTENT be truncated by the budget fallback?
+
+    Tool results are the primary target (full text survives in the
+    context-*.json dump / auto-notes.md); assistant text is truncatable while
+    its tool_calls payload is preserved verbatim; the frozen summary block and
+    the per-iteration "=== " injections are digests. NEVER touched: the system
+    prompt (first system message), the newest message and the current (last)
+    user turn.
+    """
+    if idx == newest_idx or idx == last_user_idx or idx == first_system_idx:
+        return False
+    role = m.get("role", "")
+    if role == "tool":
+        return True
+    if role == "assistant":
+        return m.get("tool_calls") is not None
+    if role == "system":
+        content = str(m.get("content", ""))
+        return content.startswith(COMPACTION_SUMMARY_MARKER) or content.startswith("=== ")
+    return False
+
+
+def shrink_messages_to_target(messages, target, tokenizer_encoding):
+    """Deterministically shrink messages until measure_size <= target.
+
+    Bounded last resort behind the progressive drain: each round removes the
+    estimated token deficit from the LARGEST eligible message (head+tail kept,
+    middle replaced by a marker), so it always terminates and never touches the
+    system prompt, the current user turn, the newest message or the tool-call
+    structure. Returns the number of content chars dropped.
+    """
+    marker_cost = len(truncation_marker(0))
+    dropped_total = 0
+    # Two stages: readable digests first, short stubs only when the array is
+    # STILL over target (many eligible messages whose floors sum above it).
+    for floor in (SHRINK_MIN_CHARS, SHRINK_FLOOR_CHARS):
+        for _ in range(SHRINK_MAX_ROUNDS):
+            size = measure_size(messages, tokenizer_encoding)
+            if size <= target:
+                break
+            newest_idx = len(messages) - 1
+            first_system_idx = next(
+                (i for i, m in enumerate(messages) if m.get("role") == "system"), None)
+            last_user_idx = next(
+                (i for i in range(len(messages) - 1, -1, -1)
+                 if messages[i].get("role") == "user"), None)
+            best = None
+            for i, m in enumerate(messages):
+                if not is_shrinkable(m, i, newest_idx, last_user_idx, first_system_idx):
+                    continue
+                chars = len(str(m.get("content", "")))
+                # 3x margin: every round must make NET progress (the marker we
+                # insert must cost less than what we remove), otherwise a
+                # deficit smaller than the marker reshapes content while the
+                # array stays over the target.
+                if chars - floor <= 3 * marker_cost:
+                    continue
+                if best is None or chars > best[0]:
+                    best = (chars, i)
+            if best is None:
+                break
+            chars, idx = best
+            removable = max(0, chars - floor)
+            total_chars = sum(message_chars(m) for m in messages)
+            chars_per_token = max(1, total_chars // size) if size > 0 else 4
+            deficit = max(0, size - target)
+            to_remove = max(deficit * chars_per_token, 3 * marker_cost)
+            if to_remove > removable:
+                to_remove = removable
+            if to_remove <= marker_cost:
+                break
+            keep = chars - to_remove
+            keep_head = keep * 2 // 3
+            keep_tail = keep - keep_head
+            new_content, dropped = truncate_middle(
+                str(messages[idx].get("content", "")), keep_head, keep_tail)
+            if dropped == 0:
+                break
+            messages[idx]["content"] = new_content
+            dropped_total += dropped
+    return dropped_total
+
 READ_TOOL_PREFIXES = (
     # Current grammar `{plugin}__{tool}`.
     "filesystem__",
@@ -1729,7 +1857,30 @@ def handle_compact_messages(req_id, arguments):
         entries = 0
 
         current_size = measure_size(messages, tokenizer_encoding)
-        if force_compact or current_size > hard_budget:
+        # Accounting alignment with the provider (mirror Rust main.rs): this
+        # plugin measures MESSAGES ONLY, while the provider also bills the tool
+        # schemas, the chat template and its own tokenizer. `billed_prompt_tokens`
+        # is the provider's ground-truth size for the array it measured as
+        # `measured_tokens`, so their difference is exactly the invisible
+        # overhead. Compaction must reach hard_budget - overhead (- headroom),
+        # not merely the soft budget, or the provider keeps billing over the
+        # hard budget and the agent force-compacts forever (chronic overshoot
+        # error: 279/24h on 2026-09-20).
+        billed_prompt_tokens = int(args.get("billed_prompt_tokens") or 0)
+        measured_tokens = int(args.get("measured_tokens") or 0)
+        over_billed = billed_prompt_tokens > hard_budget
+        if measured_tokens > 0 and billed_prompt_tokens > measured_tokens:
+            # Clamp: a provider number can be a cumulative/aggregate total, and
+            # tokenizers differ; never let the derived overhead drive the
+            # reduction target below half the hard budget.
+            overhead = min(billed_prompt_tokens - measured_tokens, hard_budget // 2)
+        else:
+            overhead = 0
+        headroom = cfg.get("compact_headroom_tokens", 2000) if over_billed else 0
+        hard_target = max(0, hard_budget - overhead - headroom)
+        effective_target = min(soft_budget, hard_target) if over_billed else hard_budget
+        over_target = current_size > effective_target
+        if force_compact or current_size > hard_budget or over_target:
             settings = {
                 "read_only_tools": read_only_tool_names(args),
                 "tool_excerpt_chars": cfg.get("tool_excerpt_chars", 800),
@@ -1739,7 +1890,8 @@ def handle_compact_messages(req_id, arguments):
             }
             compact_max_passes = cfg.get("compact_max_passes", 3)
             compact_keep_step = cfg.get("compact_keep_step", 1)
-            keep = keep_recent
+            # keep floors at 1 so the in-flight tool-call chain is never drained.
+            keep = max(1, keep_recent)
             for pass_num in range(compact_max_passes):
                 removed, df, de = compact_old_assistant_messages(
                     messages, keep, thread_dir, current_iteration, settings
@@ -1748,13 +1900,29 @@ def handle_compact_messages(req_id, arguments):
                     dump_file = df
                 entries += de
                 after_size = measure_size(messages, tokenizer_encoding)
-                if after_size <= soft_budget or keep == 0:
+                if after_size <= effective_target or keep <= 1:
                     break
                 if pass_num + 1 == compact_max_passes:
                     break
-                keep = max(0, keep - compact_keep_step)
+                keep = max(1, keep - compact_keep_step)
+
+        # Deterministic fallback (mirror Rust main.rs): truncate the largest
+        # eligible content, head+tail kept, until the measured size is under the
+        # effective target or nothing is left to shrink. Never touches the
+        # system prompt, the current user turn, the newest message or the
+        # tool-call structure.
+        truncated_chars = 0
+        if measure_size(messages, tokenizer_encoding) > effective_target:
+            truncated_chars = shrink_messages_to_target(
+                messages, effective_target, tokenizer_encoding)
 
         after = len(messages)
+        changed = before != after or truncated_chars > 0
+        after_size = measure_size(messages, tokenizer_encoding)
+        # `over_budget` tells the core whether the prompt STILL exceeds the size
+        # that fits under the hard budget; while true the core keeps forcing
+        # compaction.
+        still_over = after_size > effective_target
 
         result = {
             "messages": [
@@ -1766,13 +1934,17 @@ def handle_compact_messages(req_id, arguments):
                     **({"name": m["name"]} if m.get("name") is not None else {}),
                 }
                 for m in messages
-            ] if before != after else None,
-            "was_compacted": before != after,
+            ] if changed else None,
+            "was_compacted": changed,
             "iteration": current_iteration,
             "dump_file": dump_file,
             "entries": entries,
             "before_count": before,
             "after_count": after,
+            "measured_tokens": after_size,
+            "effective_target": effective_target,
+            "over_budget": still_over,
+            "truncated_chars": truncated_chars,
         }
         text = json.dumps(result, indent=2, ensure_ascii=False)
         send_json(make_success(req_id, make_tool_result(text)))

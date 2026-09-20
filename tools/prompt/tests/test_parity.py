@@ -234,8 +234,8 @@ class ManifestParity(unittest.TestCase):
         cls.rust = json.loads(source.read_text(encoding="utf-8"))["config_schema"]
 
     def test_entry_count(self):
-        self.assertEqual(len(self.schema), 15)
-        self.assertEqual(len(self.rust), 15)
+        self.assertEqual(len(self.schema), 16)
+        self.assertEqual(len(self.rust), 16)
 
     def test_schema_matches_builtin(self):
         rust = self.rust
@@ -385,6 +385,11 @@ class CompactMessagesE2E(unittest.TestCase):
         self.session.close()
 
     def test_over_budget_compaction_uses_budget_and_excerpts(self):
+        # hard=1000 forces progressive draining (keep_recent shrinks), so the
+        # read result is excerpted to read_excerpt_chars and the generic one to
+        # tool_excerpt_chars. The deterministic budget fallback may then shrink
+        # the read result FURTHER so the prompt still fits the hard budget (see
+        # ProviderBillingAlignment) - the caps below are upper bounds.
         messages = compact_corpus()
         is_error, text = self.session.call_tool("prompt_compact-messages", {
             "messages": messages,
@@ -403,10 +408,24 @@ class CompactMessagesE2E(unittest.TestCase):
         self.assertIn(server.COMPACTION_SUMMARY_MARKER, joined)
         read_run = max((len(m.group(0)) for m in re.finditer(r"R+", joined)), default=0)
         generic_run = max((len(m.group(0)) for m in re.finditer(r"D+", joined)), default=0)
-        self.assertEqual(read_run, 2000, "read-type tool keeps read_excerpt_chars")
-        self.assertEqual(generic_run, 800, "other tools keep tool_excerpt_chars")
+        # The excerpt caps are UPPER bounds: hard=1000 is far below this
+        # corpus's irreducible floor (40 q/a pairs), so the deterministic
+        # fallback shrinks the two tool results further - never ABOVE the caps.
+        self.assertLessEqual(read_run, 2000,
+                             "read-type tool keeps read_excerpt_chars at most")
+        self.assertLessEqual(generic_run, 800,
+                             "other tools keep tool_excerpt_chars at most")
+        # Honest contract for a target the fixed corpus floor cannot reach: the
+        # envelope's over_budget flag MUST agree with its own measurement, so
+        # the core suppresses the overshoot error instead of re-logging it. The
+        # strong "fits under the target in one cycle" assertion lives in
+        # ProviderBillingAlignment, where the reduction IS achievable.
+        self.assertEqual(envelope["over_budget"],
+                         envelope["measured_tokens"] > envelope["effective_target"],
+                         text)
 
     def test_descriptor_supplied_read_tool_gets_generous_excerpt(self):
+        # Same budgets as the excerpt test above.
         messages = compact_corpus(read_tool="my_plugin__read_file")
         is_error, text = self.session.call_tool("prompt_compact-messages", {
             "messages": messages,
@@ -418,7 +437,16 @@ class CompactMessagesE2E(unittest.TestCase):
         self.assertFalse(is_error, text)
         joined = json.dumps(json.loads(text), ensure_ascii=False)
         run = max((len(m.group(0)) for m in re.finditer(r"R+", joined)), default=0)
-        self.assertEqual(run, 2000, "descriptor-declared read tool keeps the generous excerpt")
+        self.assertLessEqual(
+            run, 2000,
+            "descriptor-declared read tool keeps the generous excerpt")
+        envelope = json.loads(text)
+        # Same honest contract as the excerpt test above: with hard=1000 this
+        # corpus floor cannot fit, but the flag must agree with the measure the
+        # envelope reports (the core keys the overshoot error on it).
+        self.assertEqual(envelope["over_budget"],
+                         envelope["measured_tokens"] > envelope["effective_target"],
+                         text)
 
     def test_force_compact_bypasses_gate(self):
         """Rust main.rs L1785-1800: the core re-invokes with force_compact=true
@@ -464,7 +492,9 @@ class CompactMessagesE2E(unittest.TestCase):
         self.assertEqual(envelope["before_count"], envelope["after_count"])
         self.assertEqual(
             sorted(envelope), ["after_count", "before_count", "dump_file",
-                               "entries", "iteration", "messages", "was_compacted"])
+                               "effective_target", "entries", "iteration",
+                               "measured_tokens", "messages", "over_budget",
+                               "truncated_chars", "was_compacted"])
 
     def test_legacy_prefix_list_is_coarse_like_rust(self):
         # `filesystem__` matches writers too; only the declared descriptor set
@@ -484,6 +514,78 @@ class CompactMessagesE2E(unittest.TestCase):
                     "prompt_compact-messages", arguments)
                 self.assertTrue(is_error, text)
                 self.assertIn(needle, text)
+
+
+class ProviderBillingAlignment(unittest.TestCase):
+    """Chronic overshoot fix (279 ERROR-level compactions/24h, 2026-09-20).
+
+    The plugin measures MESSAGES ONLY; the provider also bills the tool schemas
+    it sends alongside and its own chat template. The core passes back the pair
+    (billed_prompt_tokens, measured_tokens) from the SAME request, so the plugin
+    can subtract that invisible overhead and reduce until the PROVIDER fits
+    under the hard budget - instead of stopping at the soft budget while the
+    provider keeps billing over the hard budget and the agent force-compacts
+    (and re-logs the overshoot error) forever.
+    """
+
+    def setUp(self):
+        self.session = Session()
+
+    def tearDown(self):
+        self.session.close()
+
+    def test_billed_overhead_drives_target_and_clears_over_budget(self):
+        messages = [{"role": "system", "content": "SYSTEM PROMPT MUST SURVIVE"}]
+        for _ in range(5):
+            messages.append({
+                "role": "assistant", "content": "",
+                "tool_calls": [{"id": "c1", "type": "function",
+                                "function": {"name": "filesystem__read",
+                                             "arguments": "{}"}}],
+            })
+            messages.append({"role": "tool", "name": "filesystem__read",
+                             "tool_call_id": "c1", "content": "X" * 200000})
+        messages.append({"role": "user", "content": "CURRENT USER TURN MUST SURVIVE"})
+        messages.append({"role": "assistant", "content": "working"})
+
+        measured = server.measure_size(messages, "")
+        hard, soft = 20000, 10000
+        billed = measured + 5000
+        self.assertGreater(measured, hard)
+
+        is_error, text = self.session.call_tool("prompt_compact-messages", {
+            "messages": messages,
+            "keep_recent": 3,
+            "soft_budget": soft,
+            "hard_budget": hard,
+            "force_compact": True,
+            "billed_prompt_tokens": billed,
+            "measured_tokens": measured,
+        })
+        self.assertFalse(is_error, text)
+        envelope = json.loads(text)
+
+        # The reduction target accounts for the provider overhead + headroom and
+        # never exceeds the hard budget.
+        self.assertLessEqual(envelope["effective_target"], hard - 5000 - 2000)
+        # The provider fits from now on: the core stops force-compacting.
+        self.assertFalse(envelope["over_budget"], text)
+        self.assertLessEqual(envelope["measured_tokens"], envelope["effective_target"])
+        # The deterministic fallback (not just the summary drain) did the work.
+        self.assertGreater(envelope["truncated_chars"], 0)
+
+        out = envelope["messages"]
+        self.assertIsInstance(out, list, text)
+        # The system prompt and the CURRENT user turn survive verbatim.
+        self.assertEqual(out[0]["content"], "SYSTEM PROMPT MUST SURVIVE")
+        self.assertEqual(out[-2]["content"], "CURRENT USER TURN MUST SURVIVE")
+        # The tool-call STRUCTURE is preserved; only content was truncated.
+        with_calls = [m for m in out if m.get("tool_calls")]
+        self.assertTrue(with_calls, text)
+        self.assertEqual(with_calls[0]["tool_calls"][0]["function"]["name"],
+                         "filesystem__read")
+        self.assertTrue(all(m.get("tool_call_id")
+                            for m in out if m.get("role") == "tool"), text)
 
 
 if __name__ == "__main__":
