@@ -87,9 +87,17 @@ def split_list(raw, fallback):
 
 
 def get_profile(meta):
+    """Resolve the profile whose corpus this call reads.
+
+    Never invents a name: an absent/empty _meta.profile_name falls back to the
+    plugin's explicitly configured default_profile, then to the configured
+    global default ("omni"), never to a hardcoded literal no profile declares.
+    """
     if isinstance(meta, dict) and meta.get("profile_name"):
-        return str(meta["profile_name"])
-    return "default"
+        name = str(meta["profile_name"]).strip()
+        if name:
+            return name
+    return cfg("default_profile", "DEFAULT_PROFILE") or "omni"
 
 
 def load_config(meta=None, args=None):

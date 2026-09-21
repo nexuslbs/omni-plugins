@@ -17,6 +17,13 @@
       "type": "string",
       "default": "$env:OMNI_DIR",
       "description": "Data directory for wiki memory files"
+    },
+    {
+      "key": "default_profile",
+      "label": "Default profile",
+      "type": "string",
+      "default": "",
+      "description": "Profile used when a tool call carries no _meta.profile_name. Empty = refuse the call instead of inventing a profile directory (never the literal 'default')."
     }
   ]
 }

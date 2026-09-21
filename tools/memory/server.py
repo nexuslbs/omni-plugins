@@ -17,7 +17,12 @@ Tools:
              (the agent/LLM); this tool only stores it.
 
 MCP JSON-RPC over stdio (mirrors tools/prompt/server.py). Requires OMNI_DIR
-and DATABASE_URL env vars. Profile always comes from meta.profile_name.
+and DATABASE_URL env vars. The profile comes from meta.profile_name; when it is
+missing/empty the plugin falls back ONLY to its explicitly configured
+`default_profile` (plugin config / env) and otherwise REFUSES the call - it
+never invents a profile name. The old literal "default" fallback silently
+created <OMNI_DIR>/profiles/default, a directory no profile declares and no
+prompt ever reads (recurring incident, telegram thread 2719).
 """
 
 import json
@@ -97,10 +102,89 @@ def _fail_omni_dir():
     )
 
 
+class ProfileNameMissing(RuntimeError):
+    """Raised when a tool call carries no usable (declared) profile name."""
+
+
+def configured_default_profile():
+    """The EXPLICITLY configured default profile for this plugin, or "".
+
+    Resolved from the plugin config / env (`default_profile`). There is
+    deliberately NO hardcoded literal fallback: inventing a name made the
+    plugin write into <OMNI_DIR>/profiles/default (telegram thread 2719).
+    """
+    return cfg_env("default_profile", "DEFAULT_PROFILE", "OMNI_DEFAULT_PROFILE")
+
+
+def declared_profiles(omni_dir):
+    """Profile names declared in <OMNI_DIR>/config/profiles.yml.
+
+    Best-effort minimal YAML read (keys directly under the top-level
+    `profiles:` mapping). Returns a set of names, or None when the file is
+    absent/unreadable/empty - then the declaration guard is skipped instead of
+    blocking legitimate work.
+    """
+    try:
+        text = (Path(omni_dir) / "config" / "profiles.yml").read_text()
+    except (OSError, TypeError):
+        return None
+    names = set()
+    in_profiles = False
+    for raw in text.splitlines():
+        line = raw.rstrip()
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        if not in_profiles:
+            if re.match(r"^profiles\s*:", line):
+                in_profiles = True
+            continue
+        if len(line) - len(line.lstrip(" ")) == 0:
+            break  # end of the top-level profiles mapping
+        m = re.match(r"^  ([A-Za-z0-9_.-]+)\s*:", line)
+        if m:
+            names.add(m.group(1))
+    return names or None
+
+
 def get_profile(meta):
-    if isinstance(meta, dict) and meta.get("profile_name"):
-        return str(meta["profile_name"])
-    return "default"
+    """Resolve the profile that owns the path this call touches.
+
+    NEVER invents a name: meta.profile_name wins when non-empty, otherwise the
+    explicitly configured `default_profile` is used, otherwise the call fails
+    with ProfileNameMissing (surfaced as a tool error). A name that no declared
+    profile owns is refused too - that is what used to create
+    <OMNI_DIR>/profiles/default.
+    """
+    name = ""
+    if isinstance(meta, dict):
+        raw = meta.get("profile_name")
+        if raw is not None and str(raw).strip():
+            name = str(raw).strip()
+    if name:
+        source = "_meta.profile_name"
+    else:
+        name = configured_default_profile()
+        source = "configured default_profile"
+        if name:
+            log.warning(
+                "tool context carried no profile_name; using the configured "
+                "default_profile %r", name)
+    if not name:
+        raise ProfileNameMissing(
+            "profile_name missing in tool context; refusing to write. Fix the "
+            "caller to send _meta.profile_name (or configure the memory "
+            "plugin's 'default_profile'): this plugin never invents a profile "
+            "name such as 'default'."
+        )
+    declared = declared_profiles(get_omni_dir())
+    if declared is not None and name not in declared:
+        raise ProfileNameMissing(
+            f"profile '{name}' (from {source}) is not declared in "
+            "<OMNI_DIR>/config/profiles.yml; refusing to create or touch "
+            f"profiles/{name}/"
+        )
+    return name
 
 
 def promoted_dir(profile):
@@ -108,8 +192,32 @@ def promoted_dir(profile):
 
 
 def memories_file(profile, target):
+    """Profile-root MEMORY.md / USER.md - the file the prompt loader reads."""
+    fname = "MEMORY.md" if target == "memory" else "USER.md"
+    return Path(get_omni_dir()) / "profiles" / profile / fname
+
+
+def legacy_memories_file(profile, target):
+    """Legacy <profile>/memories/<file> path (read-only back-compat)."""
     fname = "MEMORY.md" if target == "memory" else "USER.md"
     return Path(get_omni_dir()) / "profiles" / profile / "memories" / fname
+
+
+def read_memory_text(profile, target):
+    """Current MEMORY.md/USER.md text, migrating a legacy memories/ file.
+
+    The legacy `profiles/<profile>/memories/` file is read once for
+    back-compat and becomes the base for the profile-root file; this plugin
+    never writes to the legacy path again.
+    """
+    path = memories_file(profile, target)
+    if path.exists():
+        return path.read_text()
+    legacy = legacy_memories_file(profile, target)
+    if legacy.exists():
+        log.warning("migrating legacy memory file %s to %s", legacy, path)
+        return legacy.read_text()
+    return ""
 
 
 def parse_frontmatter(text):
@@ -252,27 +360,29 @@ def handle_manage(args, meta):
     if action not in ("add", "remove", "clean"):
         return make_tool_result("manage_memory requires 'action' of 'add', 'remove' or 'clean'", True)
     profile = get_profile(meta)
-    fname = "MEMORY.md" if target == "memory" else "USER.md"
+    # Profile ROOT (profiles/<profile>/MEMORY.md), the file the prompt loader
+    # reads - never the legacy profiles/<profile>/memories/ subdirectory.
     filepath = memories_file(profile, target)
     filepath.parent.mkdir(parents=True, exist_ok=True)
     if action == "add":
         content = str(args.get("content", "")).strip()
         if not content:
             return make_tool_result("manage_memory 'add' requires 'content'", True)
-        existing = filepath.read_text() if filepath.exists() else ""
+        existing = read_memory_text(profile, target)
         filepath.write_text(f"{content}\n§\n{existing}")
-        return make_tool_result(f"Memory added to {fname} (profile: {profile}).")
+        return make_tool_result(f"Memory added to {filepath} (profile: {profile}).")
     if action == "remove":
         search = str(args.get("content", "")).strip()
-        if not search or not filepath.exists():
-            return make_tool_result(f"No matching entries removed from {fname} (profile: {profile}).")
-        text = filepath.read_text()
+        text = read_memory_text(profile, target)
+        if not search or not text:
+            return make_tool_result(f"No matching entries removed from {filepath} (profile: {profile}).")
         filepath.write_text(text.replace(search, ""))
-        return make_tool_result(f"Removed entries containing '{search}' from {fname} (profile: {profile}).")
-    # clean: delete the file
-    if filepath.exists():
-        filepath.unlink()
-    return make_tool_result(f"{fname} cleared: all entries removed (profile: {profile}).")
+        return make_tool_result(f"Removed entries containing '{search}' from {filepath} (profile: {profile}).")
+    # clean: delete the file (root and legacy) so it cannot resurrect itself
+    for p in (filepath, legacy_memories_file(profile, target)):
+        if p.exists():
+            p.unlink()
+    return make_tool_result(f"MEMORY file cleared: all entries removed from {filepath} (profile: {profile}).")
 
 
 # --------------------------------------------------------------------------
@@ -478,6 +588,11 @@ def handle_tools_call(msg):
         return
     try:
         result = HANDLERS[name](args, meta)
+    except ProfileNameMissing as e:
+        # Guard rail (telegram thread 2719): a call with no usable profile
+        # must fail loudly, NOT create <OMNI_DIR>/profiles/default.
+        log.error("tool %s refused: %s", name, e)
+        result = make_tool_result(f"{name} refused: {e}", True)
     except Exception as e:
         log.exception("tool %s crashed", name)
         result = make_tool_result(f"{name} error: {e}", True)
