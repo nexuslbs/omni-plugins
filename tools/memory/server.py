@@ -577,12 +577,37 @@ def handle_initialize(req):
     })
 
 
+def extract_meta(params):
+    """Tool-call context sent by the host.
+
+    The host serialises the context under `_meta`: in
+    `src/mcp/external/protocol.rs` the field is
+    `#[serde(rename = "_meta")] pub meta: Option<Value>` inside
+    `CallToolParams`, and `build_call_tool_request()` (used by BOTH the stdio
+    and the http transport) emits it there. So `_meta` is the PRIMARY key.
+
+    A legacy `meta` key is still tolerated so older callers keep working;
+    when both are present the real wire key `_meta` wins. Reading only the
+    legacy key is what made the profile guard useless on the real dispatch
+    path (review of telegram thread 2719, 2026-09-21).
+    """
+    if not isinstance(params, dict):
+        return {}
+    meta = params.get("_meta")
+    if isinstance(meta, dict):
+        return meta
+    legacy = params.get("meta")
+    if isinstance(legacy, dict):
+        return legacy
+    return {}
+
+
 def handle_tools_call(msg):
     rid = msg.get("id")
     params = msg.get("params") or {}
     name = params.get("name")
     args = params.get("arguments") or {}
-    meta = params.get("meta") or {}
+    meta = extract_meta(params)
     if name not in HANDLERS:
         send_json(make_error(rid, -32601, f"Unknown tool: {name}"))
         return

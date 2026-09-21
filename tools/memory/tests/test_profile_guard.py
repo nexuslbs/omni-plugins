@@ -9,12 +9,18 @@ that silently created `<OMNI_DIR>/profiles/default` - a directory no
 written there and lost.
 
 The plugin must now:
-  * use `_meta.profile_name` when non-empty,
+  * use `_meta.profile_name` when non-empty (the REAL wire key: the host
+    renames `CallToolParams.meta` to `_meta`, see
+    src/mcp/external/protocol.rs:142; a legacy `meta` key is only tolerated),
   * else fall back ONLY to its explicitly configured `default_profile`,
   * else refuse the call (ProfileNameMissing -> tool error),
   * never touch a profile name that `config/profiles.yml` does not declare,
   * write MEMORY.md / USER.md at the profile ROOT (the file the prompt loader
     reads), never the legacy `profiles/<profile>/memories/` subdirectory.
+
+The last group of tests drives `handle_tools_call` - the plugin's real
+JSON-RPC entry point - with the host's actual wire shape, so the profile
+guard cannot silently regress into reading the wrong key again.
 
 Run: python3 -m pytest tools/memory/tests/  (or python3 -m unittest)
 """
@@ -94,25 +100,97 @@ class ProfileGuardTest(unittest.TestCase):
 
     # ── tool calls surface the refusal as a tool error ──────────────────────
 
-    def test_tool_call_without_profile_returns_tool_error(self):
+    # ── tool calls on the REAL wire shape (params._meta) ───────────────────
+
+    def _call_wire(self, params):
+        """Drive the plugin through its real JSON-RPC entry point."""
         captured = []
         self.srv.send_json = lambda obj: captured.append(obj)
         self.srv.handle_tools_call(
-            {
-                "jsonrpc": "2.0",
-                "id": 7,
-                "method": "tools/call",
-                "params": {
-                    "name": "promote_to_memory",
-                    "arguments": {"name": "x", "content": "y", "confidence": "high"},
-                    "meta": {},
-                },
-            }
+            {"jsonrpc": "2.0", "id": 7, "method": "tools/call", "params": params}
         )
-        self.assertEqual(len(captured), 1)
-        result = captured[0]["result"]
-        self.assertTrue(result["isError"])
-        self.assertIn("refusing", result["content"][0]["text"])
+        self.assertEqual(len(captured), 1, "exactly one JSON-RPC reply expected")
+        return captured[0]["result"]
+
+    def test_extract_meta_prefers_the_wire_key(self):
+        # the host sends the tool context as `params._meta`
+        self.assertEqual(
+            self.srv.extract_meta({"_meta": {"profile_name": "omni"}}),
+            {"profile_name": "omni"},
+        )
+        # legacy `meta` is tolerated (older callers)
+        self.assertEqual(
+            self.srv.extract_meta({"meta": {"profile_name": "omni"}}),
+            {"profile_name": "omni"},
+        )
+        # `_meta` WINS when both are present
+        self.assertEqual(
+            self.srv.extract_meta(
+                {"_meta": {"profile_name": "omni"},
+                 "meta": {"profile_name": "default"}}
+            ),
+            {"profile_name": "omni"},
+        )
+        for params in (None, {}, {"_meta": None}, {"meta": "oops"}):
+            self.assertEqual(self.srv.extract_meta(params), {})
+
+    def test_wire_call_without_profile_refuses_and_creates_no_default(self):
+        # `_meta` empty, and no meta key at all: both must be refused loudly.
+        for params in (
+            {"name": "promote_to_memory",
+             "arguments": {"name": "x", "content": "y", "confidence": "high"},
+             "_meta": {}},
+            {"name": "promote_to_memory",
+             "arguments": {"name": "x", "content": "y", "confidence": "high"}},
+        ):
+            result = self._call_wire(params)
+            self.assertTrue(result["isError"], result)
+            self.assertIn("refusing", result["content"][0]["text"])
+        self.assertFalse((self.omni / "profiles" / "default").exists())
+
+    def test_wire_call_writes_to_the_profile_from_meta(self):
+        result = self._call_wire({
+            "name": "promote_to_memory",
+            "arguments": {"name": "wire-mem", "content": "wire body",
+                          "confidence": "high"},
+            "_meta": {"profile_name": "omni"},
+        })
+        self.assertFalse(result["isError"], result)
+        promoted = (self.omni / "profiles" / "omni" / "wiki" / "Memory"
+                    / "Promoted" / "wire-mem.md")
+        self.assertTrue(promoted.exists(), f"expected {promoted}")
+        self.assertIn("wire body", promoted.read_text())
+        self.assertFalse((self.omni / "profiles" / "default").exists())
+
+    def test_wire_call_with_legacy_meta_key_still_works(self):
+        result = self._call_wire({
+            "name": "promote_to_memory",
+            "arguments": {"name": "legacy-mem", "content": "legacy body",
+                          "confidence": "high"},
+            "meta": {"profile_name": "omni"},
+        })
+        self.assertFalse(result["isError"], result)
+        promoted = (self.omni / "profiles" / "omni" / "wiki" / "Memory"
+                    / "Promoted" / "legacy-mem.md")
+        self.assertTrue(promoted.exists(), f"expected {promoted}")
+        self.assertFalse((self.omni / "profiles" / "default").exists())
+
+    def test_wire_manage_memory_writes_profile_root(self):
+        result = self._call_wire({
+            "name": "manage_memory",
+            "arguments": {"action": "add", "content": "wire-root",
+                          "target": "memory"},
+            "_meta": {"profile_name": "omni"},
+        })
+        self.assertFalse(result["isError"], result)
+        root = self.omni / "profiles" / "omni" / "MEMORY.md"
+        self.assertTrue(root.exists())
+        self.assertIn("wire-root", root.read_text())
+        self.assertFalse((self.omni / "profiles" / "omni" / "memories").exists())
+
+    def test_wire_list_memories_without_profile_refuses(self):
+        result = self._call_wire({"name": "list_memories", "arguments": {}, "_meta": {}})
+        self.assertTrue(result["isError"], result)
         self.assertFalse((self.omni / "profiles" / "default").exists())
 
     # ── manage_memory writes the profile ROOT ───────────────────────────────

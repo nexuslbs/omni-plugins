@@ -621,12 +621,32 @@ def handle_initialize(req):
     })
 
 
+def extract_meta(params):
+    """Tool-call context sent by the host.
+
+    The host serialises it as `params._meta` (see
+    `src/mcp/external/protocol.rs`: `CallToolParams.meta` is
+    `#[serde(rename = "_meta")]`), so `_meta` is the PRIMARY key; the legacy
+    `meta` spelling is only tolerated. Reading the legacy key alone left
+    `get_profile()` inert on the real dispatch path (review, telegram 2719).
+    """
+    if not isinstance(params, dict):
+        return {}
+    meta = params.get("_meta")
+    if isinstance(meta, dict):
+        return meta
+    legacy = params.get("meta")
+    if isinstance(legacy, dict):
+        return legacy
+    return {}
+
+
 def handle_tools_call(msg):
     rid = msg.get("id")
     params = msg.get("params") or {}
     name = params.get("name")
     args = params.get("arguments") or {}
-    meta = params.get("meta") or {}
+    meta = extract_meta(params)
     if name not in HANDLERS:
         send_json(make_error(rid, -32601, "Unknown tool: %s" % name))
         return
