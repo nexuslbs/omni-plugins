@@ -142,6 +142,32 @@ class ProfileGuardTest(unittest.TestCase):
         self.assertIn("new-entry", text)
         self.assertIn("legacy-entry", text, "legacy content must be carried over once")
 
+    # ── promote_to_memory writes the DECLARED profile's promoted dir ────────
+
+    def test_promote_to_memory_writes_declared_profile_promoted_dir(self):
+        res = self.srv.handle_promote(
+            {"name": "my-mem", "content": "fact body", "confidence": "high"},
+            {"profile_name": "omni"},
+        )
+        self.assertFalse(res["isError"])
+        promoted = (
+            self.omni / "profiles" / "omni" / "wiki" / "Memory" / "Promoted" / "my-mem.md"
+        )
+        self.assertTrue(promoted.exists(), f"expected {promoted}")
+        self.assertIn("fact body", promoted.read_text())
+        self.assertIn("my-mem.md", res["content"][0]["text"])
+        # no orphan profile directory was created anywhere
+        self.assertFalse((self.omni / "profiles" / "default").exists())
+
+    def test_promote_to_memory_without_profile_name_is_refused(self):
+        # The internal handler raises; handle_tools_call turns it into a tool
+        # error (covered by test_tool_call_without_profile_returns_tool_error).
+        with self.assertRaises(self.srv.ProfileNameMissing):
+            self.srv.handle_promote(
+                {"name": "orphan", "content": "fact body", "confidence": "high"}, {}
+            )
+        self.assertFalse((self.omni / "profiles" / "default").exists())
+
 
 if __name__ == "__main__":
     unittest.main()
