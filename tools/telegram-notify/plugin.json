@@ -1,0 +1,36 @@
+{
+  "name": "telegram-notify",
+  "version": "0.1.0",
+  "type": "mcp",
+  "description": "LISTENER for the canonical `solve-captcha` event: turns a hand-off request into ONE standalone Telegram Bot API sendMessage to the operator's chat (no thread, no cause, no kanban coupling). It is one subscriber among potentially several (email/log/other notifiers can be added without touching the solver). Contains no solver logic and no challenge detection.",
+  "config_schema": [
+    {
+      "key": "TELEGRAM_BOT_TOKEN",
+      "label": "Telegram bot token",
+      "type": "string",
+      "default": "",
+      "description": "Bot token used for the standalone sendMessage call. Reference the secret by name: $secret:TELEGRAM_TOKEN"
+    },
+    {
+      "key": "TELEGRAM_CHAT_ID",
+      "label": "Operator chat id",
+      "type": "string",
+      "default": "",
+      "description": "Chat id the standalone message is sent to. Empty = the listener reports `unavailable` and the solver keeps running."
+    },
+    {
+      "key": "TELEGRAM_API_BASE",
+      "label": "Telegram API base URL",
+      "type": "string",
+      "default": "https://api.telegram.org",
+      "description": "Override the Bot API endpoint (tests/mirrors)."
+    },
+    {
+      "key": "TELEGRAM_NOTIFY_TIMEOUT_S",
+      "label": "send timeout (s)",
+      "type": "string",
+      "default": "20",
+      "description": "HTTP timeout for the sendMessage call."
+    }
+  ]
+}

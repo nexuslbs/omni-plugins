@@ -1,0 +1,50 @@
+{
+  "name": "human-intervention",
+  "version": "0.1.0",
+  "type": "mcp",
+  "description": "Solver-side half of the solve-captcha hand-off. Channel-AGNOSTIC: it publishes the canonical `solve-captcha` event (bounded payload + correlation id) onto the omniagent published-event bus, waits (bounded) for the human-intervention outcome and exposes a generic, structural page-state probe (CDP) used to detect that the challenge is gone and resume. It contains ZERO delivery code: no messaging integration, no HTTP send call, no credential, no recipient id. Delivery is a LISTENER's job (e.g. tools/echo-notify, or any other notifier plugin).",
+  "config_schema": [
+    {
+      "key": "OMNI_API_URL",
+      "label": "omniagent API base URL",
+      "type": "string",
+      "default": "http://127.0.0.1:8080",
+      "description": "Base URL of the omniagent HTTP API that hosts the published-event bus (/events/publish, /events/wait, /events/{correlation_id})."
+    },
+    {
+      "key": "HI_STATE_DIR",
+      "label": "state directory",
+      "type": "string",
+      "default": "/opt/omni/data/human-intervention",
+      "description": "Directory for the guardrail state (cooldown + per-session hand-off counts) and the audit log (hand-offs.jsonl)."
+    },
+    {
+      "key": "HI_COOLDOWN_S",
+      "label": "per-session cooldown (s)",
+      "type": "string",
+      "default": "600",
+      "description": "At most ONE hand-off per session per cooldown window (default 600 s = 10 min). Never a message storm."
+    },
+    {
+      "key": "HI_MAX_HANDOFFS",
+      "label": "hard cap per session",
+      "type": "string",
+      "default": "3",
+      "description": "Hard cap on total hand-offs for one session; further requests return status `capped`."
+    },
+    {
+      "key": "HI_DEFAULT_TIMEOUT_S",
+      "label": "default wait bound (s)",
+      "type": "string",
+      "default": "900",
+      "description": "Default bounded wait for the human (the interaction deadline carried in the event payload)."
+    },
+    {
+      "key": "HI_CDP_URL",
+      "label": "browser CDP base URL",
+      "type": "string",
+      "default": "http://browser:9222",
+      "description": "Chrome DevTools Protocol base URL of the browser the agent drives (used ONLY by the generic page-state probe)."
+    }
+  ]
+}

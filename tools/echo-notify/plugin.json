@@ -1,0 +1,22 @@
+{
+  "name": "echo-notify",
+  "version": "0.1.0",
+  "type": "mcp",
+  "description": "Second, NON-telegram LISTENER for the canonical `solve-captcha` event: appends the hand-off request to a local JSONL log (and echoes it on stderr). It exists to prove delivery is decoupled from the solver and from any single channel: it can be bound to the same event as the telegram listener, either can be enabled alone, and neither is referenced by the solver.",
+  "config_schema": [
+    {
+      "key": "ECHO_NOTIFY_LOG",
+      "label": "notification log path",
+      "type": "string",
+      "default": "/opt/omni/data/human-intervention/notifications.jsonl",
+      "description": "JSONL file the listener appends every received solve-captcha event to."
+    },
+    {
+      "key": "ECHO_NOTIFY_MODE",
+      "label": "listener mode",
+      "type": "string",
+      "default": "log",
+      "description": "log = append and return ok; fail = return an error (used to prove one failing listener breaks neither the solver nor the other listeners)."
+    }
+  ]
+}
