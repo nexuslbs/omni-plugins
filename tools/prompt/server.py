@@ -1923,10 +1923,26 @@ def handle_compact_messages(req_id, arguments):
         else:
             overhead = 0
         headroom = cfg.get("compact_headroom_tokens", 2000) if over_billed else 0
+        # Size our own measure must reach so the provider bills under the hard
+        # budget. Never above the hard budget; the soft budget stays the stricter
+        # reduction target whenever it already sits below it.
         hard_target = max(0, hard_budget - overhead - headroom)
-        effective_target = min(soft_budget, hard_target) if over_billed else hard_budget
-        over_target = current_size > effective_target
-        if force_compact or current_size > hard_budget or over_target:
+        # The size the provider needs: while it bills OVER the hard budget the
+        # unmeasurable overhead has to come out of our own measure as well.
+        must_fit_target = hard_target if over_billed else hard_budget
+        # Progressive-drain target: the soft budget (the historical reduction
+        # target), tightened to hard_target while the provider is overshooting.
+        reduce_target = min(soft_budget, hard_target) if over_billed else soft_budget
+        # Truncation-fallback target: the drain target, but NEVER above what fits
+        # under the hard budget (a soft budget configured above the hard budget
+        # must not disable the reduction).
+        effective_target = min(reduce_target, must_fit_target)
+        # Threshold gate: compact ONLY when the HARD budget is exceeded (or the
+        # core forces it because the provider billed over the hard budget). The
+        # SOFT budget is the REDUCTION TARGET consumed below, never a trigger: a
+        # prompt whose size sits between soft and hard stays completely UNTOUCHED
+        # (no draining, no truncation, null-contract).
+        if force_compact or current_size > hard_budget:
             settings = {
                 "read_only_tools": read_only_tool_names(args),
                 "tool_excerpt_chars": cfg.get("tool_excerpt_chars", 800),
@@ -1946,7 +1962,7 @@ def handle_compact_messages(req_id, arguments):
                     dump_file = df
                 entries += de
                 after_size = measure_size(messages, tokenizer_encoding)
-                if after_size <= effective_target or keep <= 1:
+                if after_size <= reduce_target or keep <= 1:
                     break
                 if pass_num + 1 == compact_max_passes:
                     break
@@ -1954,13 +1970,17 @@ def handle_compact_messages(req_id, arguments):
 
         # Deterministic fallback (mirror Rust main.rs): truncate the largest
         # eligible content, head+tail kept, until the measured size is under the
-        # effective target or nothing is left to shrink. Never touches the
-        # system prompt, the current user turn, the newest message or the
-        # tool-call structure.
+        # HARD fit target or nothing is left to shrink. The fallback exists to
+        # FIT THE HARD BUDGET (the provider's limit), never to reach the soft
+        # budget: the soft budget is the compaction DRAIN target, and truncating
+        # results down to it while the hard budget is larger destroys results the
+        # agent still needs (the v0.3.2 "dumb and slow" regression, thread 2812).
+        # Never touches the system prompt, the current user turn, the newest
+        # message or the tool-call structure.
         truncated_chars = 0
-        if measure_size(messages, tokenizer_encoding) > effective_target:
+        if measure_size(messages, tokenizer_encoding) > must_fit_target:
             truncated_chars = shrink_messages_to_target(
-                messages, effective_target, tokenizer_encoding)
+                messages, must_fit_target, tokenizer_encoding)
 
         after = len(messages)
         changed = before != after or truncated_chars > 0
@@ -1968,7 +1988,7 @@ def handle_compact_messages(req_id, arguments):
         # `over_budget` tells the core whether the prompt STILL exceeds the size
         # that fits under the hard budget; while true the core keeps forcing
         # compaction.
-        still_over = after_size > effective_target
+        still_over = after_size > must_fit_target
 
         result = {
             "messages": [
@@ -1989,6 +2009,7 @@ def handle_compact_messages(req_id, arguments):
             "after_count": after,
             "measured_tokens": after_size,
             "effective_target": effective_target,
+            "truncate_target": must_fit_target,
             "over_budget": still_over,
             "truncated_chars": truncated_chars,
         }

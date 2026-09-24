@@ -31,6 +31,7 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -416,12 +417,13 @@ class CompactMessagesE2E(unittest.TestCase):
         self.assertLessEqual(generic_run, 800,
                              "other tools keep tool_excerpt_chars at most")
         # Honest contract for a target the fixed corpus floor cannot reach: the
-        # envelope's over_budget flag MUST agree with its own measurement, so
-        # the core suppresses the overshoot error instead of re-logging it. The
-        # strong "fits under the target in one cycle" assertion lives in
-        # ProviderBillingAlignment, where the reduction IS achievable.
+        # envelope's over_budget flag MUST agree with its own measurement against
+        # the HARD fit target (truncate_target), so the core suppresses the
+        # overshoot error instead of re-logging it. The strong "fits under the
+        # target in one cycle" assertion lives in ProviderBillingAlignment, where
+        # the reduction IS achievable.
         self.assertEqual(envelope["over_budget"],
-                         envelope["measured_tokens"] > envelope["effective_target"],
+                         envelope["measured_tokens"] > envelope["truncate_target"],
                          text)
 
     def test_descriptor_supplied_read_tool_gets_generous_excerpt(self):
@@ -443,9 +445,10 @@ class CompactMessagesE2E(unittest.TestCase):
         envelope = json.loads(text)
         # Same honest contract as the excerpt test above: with hard=1000 this
         # corpus floor cannot fit, but the flag must agree with the measure the
-        # envelope reports (the core keys the overshoot error on it).
+        # envelope reports against the HARD fit target (the core keys the
+        # overshoot error on it).
         self.assertEqual(envelope["over_budget"],
-                         envelope["measured_tokens"] > envelope["effective_target"],
+                         envelope["measured_tokens"] > envelope["truncate_target"],
                          text)
 
     def test_force_compact_bypasses_gate(self):
@@ -494,7 +497,87 @@ class CompactMessagesE2E(unittest.TestCase):
             sorted(envelope), ["after_count", "before_count", "dump_file",
                                "effective_target", "entries", "iteration",
                                "measured_tokens", "messages", "over_budget",
-                               "truncated_chars", "was_compacted"])
+                               "truncate_target", "truncated_chars",
+                               "was_compacted"])
+
+    def test_soft_budget_never_triggers_and_truncation_targets_hard_budget(self):
+        """Hard design rule (operator, 2026-09-24): compaction is triggered ONLY
+        by the HARD budget; the soft budget is the REDUCTION TARGET.
+
+        A prompt whose size sits between soft and hard must be left completely
+        UNTOUCHED (null-contract: no draining, no truncation, no dump / no
+        compaction event), and the deterministic truncation fallback must never
+        drag content down to the SOFT budget while the array still fits the HARD
+        budget (the v0.3.2 "dumb and slow" regression, thread 2812).
+        """
+        # ~250k proxy tokens (chars/4): strictly between soft=100k and hard=400k.
+        messages = [{"role": "system", "content": "SYSTEM PROMPT"}]
+        for _ in range(5):
+            messages.append({
+                "role": "assistant", "content": "",
+                "tool_calls": [{"id": "c1", "type": "function",
+                                "function": {"name": "filesystem__read",
+                                             "arguments": "{}"}}],
+            })
+            messages.append({"role": "tool", "name": "filesystem__read",
+                             "tool_call_id": "c1", "content": "X" * 200000})
+        messages.append({"role": "user", "content": "CURRENT USER TURN"})
+        measured = server.measure_size(messages, "")
+        self.assertGreater(measured, 100_000, measured)
+        self.assertLess(measured, 400_000, measured)
+
+        with tempfile.TemporaryDirectory() as thread_dir:
+            is_error, text = self.session.call_tool("prompt_compact-messages", {
+                "messages": messages,
+                "hard_budget": 400_000,
+                "soft_budget": 100_000,
+                "keep_recent": 3,
+                "thread_dir": thread_dir,
+                "current_iteration": 7,
+            })
+            self.assertFalse(is_error, text)
+            envelope = json.loads(text)
+            self.assertFalse(envelope["was_compacted"], text)
+            self.assertIsNone(envelope["messages"], text)
+            self.assertEqual(envelope["truncated_chars"], 0, text)
+            self.assertEqual(envelope["entries"], 0, text)
+            self.assertIsNone(envelope["dump_file"], text)
+            # No compaction event at all: the durable thread dir stays empty.
+            self.assertEqual(os.listdir(thread_dir), [], text)
+            # Soft is reported as the reduction TARGET, hard as the fit target.
+            self.assertEqual(envelope["effective_target"], 100_000, text)
+            self.assertEqual(envelope["truncate_target"], 400_000, text)
+
+        # Same shape over the HARD budget: compaction fires, and the deterministic
+        # fallback reduces only to the HARD fit target - never down to the soft
+        # budget. One single tool turn is not drainable, so the fallback does it.
+        over_corpus = [
+            {"role": "system", "content": "SYSTEM PROMPT"},
+            {"role": "assistant", "content": "",
+             "tool_calls": [{"id": "c1", "type": "function",
+                             "function": {"name": "filesystem__read",
+                                          "arguments": "{}"}}]},
+            {"role": "tool", "name": "filesystem__read",
+             "tool_call_id": "c1", "content": "X" * 2_000_000},
+            {"role": "user", "content": "CURRENT USER TURN"},
+        ]
+        over_size = server.measure_size(over_corpus, "")
+        self.assertGreater(over_size, 200_000, over_size)
+        is_error, text = self.session.call_tool("prompt_compact-messages", {
+            "messages": over_corpus,
+            "hard_budget": 200_000,
+            "soft_budget": 100_000,
+            "keep_recent": 3,
+        })
+        self.assertFalse(is_error, text)
+        envelope = json.loads(text)
+        self.assertTrue(envelope["was_compacted"], text)
+        self.assertEqual(envelope["truncate_target"], 200_000, text)
+        self.assertGreater(envelope["truncated_chars"], 0, text)
+        self.assertLessEqual(envelope["measured_tokens"], 200_000, text)
+        # NOT truncated down to the soft budget: the fallback only has to fit the
+        # HARD budget, the soft budget stays the drain target.
+        self.assertGreater(envelope["measured_tokens"], 100_000, text)
 
     def test_legacy_prefix_list_is_coarse_like_rust(self):
         # `filesystem__` matches writers too; only the declared descriptor set
@@ -570,7 +653,12 @@ class ProviderBillingAlignment(unittest.TestCase):
         self.assertLessEqual(envelope["effective_target"], hard - 5000 - 2000)
         # The provider fits from now on: the core stops force-compacting.
         self.assertFalse(envelope["over_budget"], text)
-        self.assertLessEqual(envelope["measured_tokens"], envelope["effective_target"])
+        # The reduction (drain + deterministic fallback) only has to fit the HARD
+        # budget: `truncate_target` is hard_budget - overhead - headroom, while
+        # `effective_target` stays the soft-budget DRAIN aim.
+        self.assertLessEqual(envelope["measured_tokens"], envelope["truncate_target"])
+        self.assertEqual(envelope["truncate_target"], hard - 5000 - 2000, text)
+        self.assertEqual(envelope["effective_target"], soft, text)
         # The deterministic fallback (not just the summary drain) did the work.
         self.assertGreater(envelope["truncated_chars"], 0)
 
