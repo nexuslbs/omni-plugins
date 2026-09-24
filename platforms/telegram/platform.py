@@ -30,6 +30,17 @@ Inbound: when polling_enabled is true a background thread long-polls
 getUpdates (offset-based) and emits `inbound_message` notifications to
 stdout, exactly like the mattermost platform does.
 
+Inbound resilience (2026-09-24): the poller uses per-phase timeouts
+(<= 10 s connect/TLS-handshake, ~30 s long-poll read), resolves IPv4-ONLY
+with fast failover across the resolved addresses, retries a failed cycle
+within a small jittered budget (3 attempts, 0.5/1 s backoff) and sleeps a
+bounded 5 s floor before the next cycle - a flaky network cycle costs
+seconds, never minutes. The Telegram update offset is only advanced for
+updates that were successfully handled (no message loss). Poll health
+(ok/failed counters, last success, last error) is self-reported via
+`plugin_status` notifications so a stall is visible from the plugin status
+API without docker logs.
+
 Config flag `first_last_only` (boolean, default true): telegram-specific
 delivery collapse implemented INSIDE this plugin. When true, the plugin
 delivers only the thread's FIRST message (seq-0, the prompt/cause) and the
@@ -47,10 +58,13 @@ no real bot token is ever needed for tests.
 Uses only the Python standard library (urllib) - no external dependencies.
 """
 
+import http.client
 import json
 import logging
 import os
+import random
 import re
+import socket
 import sys
 import threading
 import time
@@ -92,11 +106,54 @@ CHAT_SEND_MIN_INTERVAL_SECS = 1.0
 # Bounded retry budget for transient Telegram failures (429 / 5xx / network):
 # small and explicit - never an infinite loop.
 API_MAX_ATTEMPTS = 3
-API_RETRY_BACKOFF_SECS = 1.0
+# Inter-attempt backoff base (seconds): the retry waits grow 0.5s, 1.0s and
+# are jittered (see _jittered_backoff). Bounded and small by design: a flaky
+# network cycle must cost seconds, never minutes.
+API_RETRY_BACKOFF_SECS = 0.5
 # A single 429 retry_after wait is capped so an absurd value can never stall
 # the plugin indefinitely; the wait itself is interruptible by shutdown.
 MAX_RETRY_AFTER_SECS = 60.0
-API_TIMEOUT_SECS = 60
+# After a cycle whose retry budget was exhausted the poller sleeps this
+# bounded floor before the next getUpdates cycle - never an unbounded
+# 60s-scale stall (the old blanket API_TIMEOUT_SECS=60 turned one bad cycle
+# into up to ~3 minutes of inbound silence).
+POLL_FAILURE_FLOOR_SECS = 5.0
+# Per-phase timeouts (network resilience, 2026-09-24): urllib's single
+# `timeout` bounds BOTH the TCP connect/TLS handshake AND every blocking
+# read, so a stalled connect used to eat the whole 60s budget before a
+# single byte was read. Each phase now gets its own budget:
+#   * connect/TLS-handshake: <= 10s (a dead edge IP or an unreachable AAAA
+#     must never hang the poller for a minute);
+#   * getUpdates read: the long-poll window (30s) plus a small margin so a
+#     legitimate long-poll response is never cut (the server HOLDS the
+#     request; that is not a stalled connection);
+#   * every other call (sendMessage, editMessageText, ...): <= 15s read.
+# Values are env-overridable (TG_*) so the smoke test can exercise the
+# failure paths with small budgets instead of waiting out the production
+# ones.
+def _env_float(name, default):
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return default
+    try:
+        return max(0.1, float(raw))
+    except (TypeError, ValueError):
+        return default
+
+
+API_CONNECT_TIMEOUT_SECS = _env_float("TG_CONNECT_TIMEOUT_SECS", 10.0)
+API_READ_TIMEOUT_SECS = _env_float("TG_READ_TIMEOUT_SECS", 15.0)
+POLL_READ_TIMEOUT_SECS = _env_float(
+    "TG_POLL_READ_TIMEOUT_SECS", POLL_LONGPOLL_SECS + 5.0)
+
+
+def _jittered_backoff(seconds):
+    """Full-jitter a backoff wait (seconds..2*seconds), capped.
+
+    Jitter stops synchronized retry storms (several clients retrying in
+    lockstep) without changing the bounded order of magnitude.
+    """
+    return min(seconds + random.uniform(0.0, seconds), MAX_RETRY_AFTER_SECS)
 # Typing throttle default: at most ONE sendChatAction per chat every N seconds,
 # no matter how many typing requests core enqueues (core enqueues one every 5 s
 # for the whole run, ~12/min per active thread - the plugin's biggest
@@ -111,6 +168,141 @@ DEFAULT_TYPING_INTERVAL_SECS = 5.0
 CONNECTION_RETRY_METHODS = frozenset({
     "getUpdates", "editMessageText", "setMessageReaction",
 })
+
+
+# ----------------------------------------------------------------------
+# Per-phase timeout transport (network resilience, 2026-09-24)
+# ----------------------------------------------------------------------
+# The container's DNS returns BOTH a reachable IPv4 A record AND an
+# unreachable IPv6 AAAA record (no non-loopback IPv6 route), and a socket
+# that picks the IPv6 address first stalls until its timeout (the Errno 101
+# / "The handshake operation timed out" bursts). The connection classes
+# below therefore:
+#   * resolve IPv4-ONLY (AF_INET): the AAAA record is never even considered;
+#   * iterate the resolved addresses and fail over to the next one on a
+#     connect failure, so a dead edge IP is a fast retry against a different
+#     address instead of a hang;
+#   * bound the TCP connect + TLS handshake with the small connect budget
+#     and switch the socket to the read budget only AFTER the connection is
+#     established.
+class _TimedHTTPConnection(http.client.HTTPConnection):
+    """HTTPConnection with separate connect vs read timeouts."""
+
+    def __init__(self, *args, connect_timeout=None, read_timeout=None,
+                 **kwargs):
+        self._read_timeout = read_timeout
+        kwargs["timeout"] = connect_timeout
+        super().__init__(*args, **kwargs)
+
+    def connect(self):
+        self.sock = _connect_tcp_ipv4(self.host, self.port, self.timeout)
+        if self._read_timeout is not None:
+            self.sock.settimeout(self._read_timeout)
+
+
+class _TimedHTTPSConnection(http.client.HTTPSConnection):
+    """HTTPSConnection with separate connect/TLS vs read timeouts."""
+
+    def __init__(self, *args, connect_timeout=None, read_timeout=None,
+                 **kwargs):
+        self._read_timeout = read_timeout
+        kwargs["timeout"] = connect_timeout
+        super().__init__(*args, **kwargs)
+
+    def connect(self):
+        self.sock = _connect_tcp_ipv4(self.host, self.port, self.timeout)
+        if self._tunnel_host:
+            self._tunnel()
+        self.sock = self._context.wrap_socket(
+            self.sock, server_hostname=self.host)
+        if self._read_timeout is not None:
+            self.sock.settimeout(self._read_timeout)
+
+
+def _connect_tcp_ipv4(host, port, timeout):
+    """TCP connect using IPv4 addresses only, with fast failover.
+
+    getaddrinfo(..., AF_INET, ...) returns only A records, so an
+    unreachable AAAA can never be selected (the Errno 101 burst). Every
+    returned address gets the same small connect budget; a failure (timeout,
+    refused, unreachable) immediately tries the next address instead of
+    hanging.
+    """
+    infos = socket.getaddrinfo(host, port, socket.AF_INET,
+                               socket.SOCK_STREAM)
+    last_err = None
+    for family, socktype, proto, _canon, sockaddr in infos:
+        sock = None
+        try:
+            sock = socket.socket(family, socktype, proto)
+            sock.settimeout(timeout)
+            sock.connect(sockaddr)
+            return sock
+        except OSError as e:
+            last_err = e
+            if sock is not None:
+                try:
+                    sock.close()
+                except OSError:
+                    pass
+    raise last_err or OSError("no IPv4 address for {}".format(host))
+
+
+class _TimedHTTPHandler(urllib.request.HTTPHandler):
+    def __init__(self, connect_timeout=None, read_timeout=None):
+        self._connect_timeout = connect_timeout
+        self._read_timeout = read_timeout
+        super().__init__()
+
+    def http_open(self, req):
+        return self.do_open(self._make_connection, req)
+
+    def _make_connection(self, host, timeout=None, **kwargs):
+        return _TimedHTTPConnection(
+            host, connect_timeout=self._connect_timeout,
+            read_timeout=self._read_timeout, **kwargs)
+
+
+class _TimedHTTPSHandler(urllib.request.HTTPSHandler):
+    def __init__(self, connect_timeout=None, read_timeout=None, **kwargs):
+        self._connect_timeout = connect_timeout
+        self._read_timeout = read_timeout
+        super().__init__(**kwargs)
+
+    def https_open(self, req):
+        # Python 3.13 dropped the `check_hostname` parameter from
+        # HTTPSConnection and from HTTPSHandler.https_open (hostname
+        # verification is controlled by the SSLContext); mirror the stdlib
+        # 3.13 signature and pass only the context.
+        return self.do_open(
+            self._make_connection, req, context=self._context)
+
+    def _make_connection(self, host, timeout=None, **kwargs):
+        return _TimedHTTPSConnection(
+            host, connect_timeout=self._connect_timeout,
+            read_timeout=self._read_timeout, **kwargs)
+
+
+def _build_api_opener(connect_timeout, read_timeout):
+    """Opener for one timeout profile.
+
+    ProxyHandler({}) is explicit: the bot API client talks to
+    api.telegram.org directly (no proxy in the stack), and a proxy would
+    bypass the per-address IPv4 connect logic above.
+    """
+    return urllib.request.build_opener(
+        urllib.request.ProxyHandler({}),
+        _TimedHTTPHandler(connect_timeout, read_timeout),
+        _TimedHTTPSHandler(connect_timeout, read_timeout),
+    )
+
+
+# getUpdates is a long poll: its read budget is the long-poll window (plus a
+# margin), while every other call gets the short outbound read budget.
+_POLL_OPENER = _build_api_opener(API_CONNECT_TIMEOUT_SECS,
+                                 POLL_READ_TIMEOUT_SECS)
+_CALL_OPENER = _build_api_opener(API_CONNECT_TIMEOUT_SECS,
+                                 API_READ_TIMEOUT_SECS)
 
 
 def _parse_retry_after(raw):
@@ -149,6 +341,13 @@ def _read_error_body(err):
         return err.read().decode("utf-8", errors="replace")[:500]
     except Exception:
         return ""
+
+
+def _fmt_ts(ts):
+    """Epoch seconds -> 'YYYY-MM-DDTHH:MM:SSZ' (or 'never')."""
+    if not ts:
+        return "never"
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(ts))
 
 
 class OutboundRateGate:
@@ -263,6 +462,21 @@ class TelegramPlatform:
         self.typing_interval_secs = DEFAULT_TYPING_INTERVAL_SECS
         self._typing_lock = threading.Lock()
         self._last_typing = {}
+        # Poll health (network resilience, 2026-09-24): counters and the last
+        # error/success timestamps so a polling stall is visible from the
+        # plugin-manager status instead of only in docker logs. Exposed via
+        # `plugin_status` notifications (the core surfaces any non-"ok"
+        # runtime status on GET /api/plugins).
+        self._health_lock = threading.Lock()
+        self._poll_health = {
+            "cycles_ok": 0,
+            "cycles_failed": 0,
+            "consecutive_failures": 0,
+            "last_success_ts": None,
+            "last_error": None,
+            "last_error_ts": None,
+        }
+        self._poll_status = "ok"
 
     # ------------------------------------------------------------------
     # stdout helpers (single write per line so polling thread + main
@@ -326,8 +540,13 @@ class TelegramPlatform:
                         "shutdown while waiting for the outbound rate gate "
                         "on {}".format(method), answered=False)
             req = urllib.request.Request(url, data=data, method="POST")
+            # getUpdates is a long poll (read budget = the long-poll window);
+            # every other call gets the short outbound read budget. Both
+            # share the small connect/TLS budget (network resilience,
+            # 2026-09-24).
+            opener = _POLL_OPENER if method == "getUpdates" else _CALL_OPENER
             try:
-                with urllib.request.urlopen(req, timeout=API_TIMEOUT_SECS) as resp:
+                with opener.open(req) as resp:
                     raw = resp.read().decode("utf-8", errors="replace")
                 try:
                     body = json.loads(raw)
@@ -348,7 +567,8 @@ class TelegramPlatform:
                         # Honor Telegram's own back-pressure signal.
                         wait = err.retry_after or API_RETRY_BACKOFF_SECS
                     elif 500 <= code < 600:
-                        wait = API_RETRY_BACKOFF_SECS * attempt
+                        wait = _jittered_backoff(API_RETRY_BACKOFF_SECS
+                                                 * attempt)
                 if wait is None:
                     raise err
                 wait = min(wait, MAX_RETRY_AFTER_SECS)
@@ -368,8 +588,7 @@ class TelegramPlatform:
                     answered=False)
                 # Delivery is UNKNOWN: never blind-retry a send* call.
                 if attempt < budget and method in CONNECTION_RETRY_METHODS:
-                    wait = min(API_RETRY_BACKOFF_SECS * attempt,
-                               MAX_RETRY_AFTER_SECS)
+                    wait = _jittered_backoff(API_RETRY_BACKOFF_SECS * attempt)
                     log.warning("%s unreachable (%s) - retrying in %.1fs "
                                 "(%d/%d)", method, err, wait, attempt, budget)
                     if self._wait(wait):
@@ -907,6 +1126,60 @@ class TelegramPlatform:
             return True
         return self._poll_stop.wait(max(0.0, seconds)) or self._stop.is_set()
 
+    def _emit_plugin_status(self, status, message):
+        """Self-report runtime status to core (`plugin_status` notification).
+
+        The core stores the latest status per platform and surfaces any
+        non-"ok" status on GET /api/plugins (status_message), so a degraded
+        poller is visible from the dashboard/API without docker logs.
+        """
+        self._write_json({
+            "method": "plugin_status",
+            "params": {"status": status, "message": message},
+        })
+
+    def _record_poll_cycle(self, ok, error=None):
+        """Update poll health and emit a plugin_status on state changes.
+
+        Emitted on every failed cycle (status=degraded with the reason and
+        the counters) and once when polling recovers (status=ok). The
+        message always carries the counters, the last success timestamp and
+        the last error reason, so a stall is detectable without docker logs.
+        """
+        now = time.time()
+        with self._health_lock:
+            h = self._poll_health
+            if ok:
+                h["cycles_ok"] += 1
+                h["consecutive_failures"] = 0
+                h["last_success_ts"] = now
+                h["last_error"] = None
+                h["last_error_ts"] = None
+            else:
+                h["cycles_failed"] += 1
+                h["consecutive_failures"] += 1
+                h["last_error"] = str(error) if error is not None else "unknown"
+                h["last_error_ts"] = now
+            snapshot = dict(h)
+        if ok:
+            if self._poll_status != "ok":
+                self._poll_status = "ok"
+                self._emit_plugin_status(
+                    "ok",
+                    "polling healthy: {} ok / {} failed cycles, last success "
+                    "{}".format(snapshot["cycles_ok"],
+                                 snapshot["cycles_failed"],
+                                 _fmt_ts(snapshot["last_success_ts"])))
+        else:
+            self._poll_status = "degraded"
+            self._emit_plugin_status(
+                "degraded",
+                "getUpdates failed: {} ({} consecutive failures, {} ok / {} "
+                "failed cycles, last success {})".format(
+                    snapshot["last_error"], snapshot["consecutive_failures"],
+                    snapshot["cycles_ok"], snapshot["cycles_failed"],
+                    _fmt_ts(snapshot["last_success_ts"])))
+
     def _stop_polling(self):
         self._poll_stop.set()
         if self._poll_thread and self._poll_thread.is_alive():
@@ -948,19 +1221,34 @@ class TelegramPlatform:
                     upd_id = update.get("update_id")
                     if upd_id is not None:
                         self._offset = int(upd_id) + 1
+                self._record_poll_cycle(ok=True)
             except TelegramApiError as e:
-                log.warning("getUpdates failed: %s", e)
-                # Error backoff: don't hot-loop on persistent failures. A 429
-                # that exhausted its retry budget tells us exactly how long to
-                # wait (parameters.retry_after); honor it, capped.
-                backoff = min(self.poll_interval_secs, 30)
+                # Network resilience (2026-09-24): a failed cycle is logged at
+                # WARN with the reason and the poll-health counters, reported
+                # to core via plugin_status, and followed by a bounded floor
+                # sleep - never an unbounded/60s-scale stall. The Telegram
+                # update offset is NOT advanced for updates that were not
+                # successfully handled, so nothing is lost.
+                self._record_poll_cycle(ok=False, error=e)
+                log.warning(
+                    "getUpdates failed: %s (poll health: %d ok / %d failed "
+                    "cycles, %d consecutive failures, last success %s)",
+                    e, self._poll_health["cycles_ok"],
+                    self._poll_health["cycles_failed"],
+                    self._poll_health["consecutive_failures"],
+                    _fmt_ts(self._poll_health["last_success_ts"]))
+                # Error backoff: a bounded floor, never a hot loop. A 429 that
+                # exhausted its retry budget tells us exactly how long to wait
+                # (parameters.retry_after); honor it, capped.
+                backoff = POLL_FAILURE_FLOOR_SECS
                 if e.retry_after:
                     backoff = max(backoff,
                                   min(e.retry_after, MAX_RETRY_AFTER_SECS))
                 self._poll_wait(backoff)
             except Exception as e:  # pragma: no cover - defensive
+                self._record_poll_cycle(ok=False, error=e)
                 log.warning("poll loop error: %s", e)
-                self._poll_wait(min(self.poll_interval_secs, 30))
+                self._poll_wait(POLL_FAILURE_FLOOR_SECS)
             else:
                 # Short sleep between long-polls to keep offset commits sane.
                 self._poll_wait(max(0.5, min(self.poll_interval_secs, 5)))

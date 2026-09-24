@@ -19,6 +19,8 @@ Admin endpoints (for tests, no token required):
   GET  /admin/reactions                list stored reactions
   GET  /admin/updates                  list updates still in the queue
   POST /admin/reset                    clear all in-memory state
+  POST /admin/stall                    getUpdates accepts and never answers
+                                       while {"on": true} (stall simulation)
 
 Every /bot<token>/... call accepts ANY non-empty token - the point is to
 verify the platform's protocol/payloads, not real credentials. No request
@@ -84,6 +86,7 @@ class MockTelegramState:
         self.token = None            # last-seen token (any non-empty accepted)
         self.bot_fail = False      # when True every /bot<token>/* POST returns HTTP 500
         self.bot_delay = 0.0      # seconds each sendMessage sleeps (slow-API simulation)
+        self.stall = False        # when True getUpdates accepts and never answers
         # Emojis this mock accepts in setMessageReaction. Defaults to the real
         # Telegram reaction set; /admin/reaction_allow can narrow it to
         # simulate a REJECTED (invalid) mapping.
@@ -181,9 +184,10 @@ class MockTelegramState:
         deadline = time.time() + max(0.1, min(timeout, 2.0))
         while time.time() < deadline:
             with self.lock:
-                ready = sorted(
-                    u for i, u in self.updates.items()
-                    if offset is None or i >= offset)
+                # Sort by update_id (NOT by the update dicts - dicts are not
+                # orderable, TypeError when 2+ updates are queued).
+                ready = [u for i, u in sorted(self.updates.items())
+                         if offset is None or i >= offset]
                 if ready:
                     for u in ready:
                         self.updates.pop(u["update_id"], None)
@@ -283,6 +287,28 @@ class MockHandler(BaseHTTPRequestHandler):
             }})
             self.state.get_updates_calls += 1
         elif method == "getUpdates":
+            # Stall simulation (network-resilience tests): while /admin/stall
+            # is on, the mock ACCEPTS the request and never answers - the
+            # client's read timeout fires, exactly like a dead connection
+            # mid-poll. When the stall ends, a STALE handler must NOT run a
+            # normal poll: its client already timed out and disconnected, and
+            # a normal poll would CONSUME queued updates the client never
+            # received (breaking the no-drop assertion). Answer with an error
+            # instead; the fresh request the client sends after recovery goes
+            # through the normal path below.
+            if self.state.stall:
+                while self.state.stall:
+                    time.sleep(0.1)
+                # The client already timed out and disconnected: writing the
+                # error raises BrokenPipeError. Tolerate it (the response is
+                # unreadable anyway) - the socketserver must not print a
+                # traceback for every aborted stalled request.
+                try:
+                    self._json(500, {"ok": False,
+                                     "description": "stalled request aborted"})
+                except (BrokenPipeError, ConnectionResetError):
+                    pass
+                return
             offset = body.get("offset")
             try:
                 timeout = int(body.get("timeout", 0) or 0)
@@ -409,6 +435,12 @@ class MockHandler(BaseHTTPRequestHandler):
                 except (TypeError, ValueError):
                     pass
             self._json(200, {"ok": True, "bot_delay": self.state.bot_delay})
+        elif path == "/admin/stall":
+            # Toggle the getUpdates stall: {"on": true} makes the mock accept
+            # getUpdates requests and never answer (client read timeout).
+            if isinstance(body, dict) and "on" in body:
+                self.state.stall = bool(body.get("on"))
+            self._json(200, {"ok": True, "stall": self.state.stall})
         elif path == "/admin/arm":
             # Arm a one-shot failure for the next matching Bot API request:
             # {"method": "sendMessage", "code": 429, "retry_after": 1,

@@ -35,6 +35,7 @@ import signal
 import socket
 import subprocess
 import sys
+import threading
 import time
 import urllib.request
 
@@ -68,11 +69,14 @@ def http_get(url):
 class PlatformProc:
     """Subprocess wrapper driving platform.py over stdin/stdout JSON-lines."""
 
-    def __init__(self):
+    def __init__(self, env=None):
+        proc_env = dict(os.environ)
+        if env:
+            proc_env.update(env)
         self.proc = subprocess.Popen(
             [sys.executable, PLATFORM_PY],
             stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE, text=True, bufsize=1)
+            stderr=subprocess.PIPE, text=True, bufsize=1, env=proc_env)
         self.next_id = 1
 
     def call(self, method, params=None, timeout=15):
@@ -1227,6 +1231,180 @@ def main():
         check(calls_after == calls_before
               and any(u.get("update_id") == 9600 for u in updates),
               "missing bot_token -> zero getUpdates calls, injected update stays queued")
+
+        # ------------------------------------------------------------------
+        # 14. NETWORK RESILIENCE (2026-09-24): per-phase timeouts, IPv4-only
+        #     resolution, bounded jittered retry and poll health.
+        #     The operator report (2026-09-22) showed a flaky network/TLS
+        #     path from the container to api.telegram.org: one bad getUpdates
+        #     cycle could stall inbound for ~3 minutes (60s blanket timeout x
+        #     3 attempts). These cases run the plugin with SMALL per-phase
+        #     budgets (env overrides) and assert that a failing cycle ends
+        #     within the bounded budget, that no update is dropped, and that
+        #     the Telegram offset only advances after a successful
+        #     _handle_update.
+        # ------------------------------------------------------------------
+        tiny_env = {
+            "TG_CONNECT_TIMEOUT_SECS": "1.0",
+            "TG_READ_TIMEOUT_SECS": "1.0",
+            "TG_POLL_READ_TIMEOUT_SECS": "1.0",
+        }
+
+        # 14a. TLS-handshake timeout: an HTTPS endpoint whose server accepts
+        #      the TCP connection but never completes the TLS handshake (the
+        #      "The handshake operation timed out" production failure). The
+        #      connect/TLS budget must bound the attempt and the whole failed
+        #      cycle (3 attempts + jittered backoff) must end within a small
+        #      bounded budget, NOT 3 x 60s.
+        stall_port = free_port()
+        stall_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        stall_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        stall_sock.bind(("127.0.0.1", stall_port))
+        stall_sock.listen(4)
+        stall_stop = threading.Event()
+
+        def _hold_conn(conn):
+            try:
+                while not stall_stop.is_set():
+                    time.sleep(0.1)
+            finally:
+                try:
+                    conn.close()
+                except OSError:
+                    pass
+
+        def _stall_accept():
+            while not stall_stop.is_set():
+                try:
+                    conn, _addr = stall_sock.accept()
+                except OSError:
+                    return
+                threading.Thread(target=_hold_conn, args=(conn,),
+                                 daemon=True).start()
+
+        threading.Thread(target=_stall_accept, daemon=True).start()
+
+        plat.stop()
+        plat = PlatformProc(env=tiny_env)
+        r = plat.call("configure", {"config": {
+            "bot_token": MOCK_TOKEN,
+            "api_base_url": "https://127.0.0.1:{}".format(stall_port),
+            "polling_enabled": True,
+            "poll_interval_secs": 1,
+        }})
+        check(r.get("result", {}).get("configured") is True,
+              "resilience: configure against a TLS-stalling endpoint")
+        t0 = time.time()
+        n = plat.expect_notification("plugin_status", timeout=30)
+        t1 = time.time()
+        p = n.get("params", {})
+        check(p.get("status") == "degraded",
+              "resilience: TLS-stall -> plugin_status degraded")
+        msg = p.get("message", "").lower()
+        check("handshake" in msg or "timed out" in msg,
+              "resilience: degraded message carries the TLS error reason")
+        check(t1 - t0 < 15.0,
+              "resilience: TLS-stall cycle bounded (%.1fs < 15s; the old "
+              "blanket 60s timeout took up to 3x60s)" % (t1 - t0))
+        plat.stop()
+        stall_stop.set()
+        try:
+            stall_sock.close()
+        except OSError:
+            pass
+
+        # 14b. read-timeout stall + NO-DROP + offset-advance-only-on-success:
+        #      the mock is stalled (accepts getUpdates, never answers), an
+        #      update is injected DURING the outage and stays QUEUED (the
+        #      plugin must NOT advance its offset past an update it could not
+        #      handle); when the API recovers the SAME update is delivered
+        #      exactly once. The update is injected only AFTER the first
+        #      degraded notification, which proves the poller is actually
+        #      blocked by the stall - otherwise a poll that slipped in before
+        #      the stall took effect could consume the update early and make
+        #      the no-drop assertion vacuous.
+        # NOTE: the mock still holds update 9600 from section 13 (token-less
+        # plugin, never polled). Reset the state first so the queue carries
+        # ONLY the update injected during this outage - otherwise the first
+        # inbound_message after recovery would be 9600, not 9701.
+        http_post(base + "/admin/reset", {})
+        plat = PlatformProc(env=tiny_env)
+        r = plat.call("configure", {"config": {
+            "bot_token": MOCK_TOKEN,
+            "api_base_url": base,
+            "polling_enabled": True,
+            "poll_interval_secs": 1,
+        }})
+        check(r.get("result", {}).get("configured") is True,
+              "resilience: configure against the mock")
+        http_post(base + "/admin/stall", {"on": True})
+        t0 = time.time()
+        n = plat.expect_notification("plugin_status", timeout=30)
+        t1 = time.time()
+        p = n.get("params", {})
+        check(p.get("status") == "degraded",
+              "resilience: read-stall -> plugin_status degraded")
+        check(t1 - t0 < 15.0,
+              "resilience: read-stall cycle bounded (%.1fs < 15s)"
+              % (t1 - t0))
+        # inject DURING the outage: the update must stay queued
+        http_post(base + "/admin/inject", {
+            "update_id": 9701,
+            "message": {
+                "message_id": 795,
+                "date": 1700000030,
+                "chat": {"id": 123456, "type": "private"},
+                "from": {"id": 555, "first_name": "Mock"},
+                "text": "resilience no-drop hello",
+            },
+        })
+        n = plat.expect_notification("plugin_status", timeout=30)
+        check(n.get("params", {}).get("status") == "degraded",
+              "resilience: a second failed cycle happens with the update queued")
+        updates = http_get(base + "/admin/updates").get("updates", [])
+        check(any(u.get("update_id") == 9701 for u in updates),
+              "resilience: offset NOT advanced while the update was not "
+              "handled (update 9701 still queued)")
+        # recover: the next poll succeeds and delivers the SAME update
+        http_post(base + "/admin/stall", {"on": False})
+        n = plat.expect_notification("inbound_message", timeout=25)
+        p = n.get("params", {})
+        check(p.get("external_id") == "795"
+              and p.get("text") == "resilience no-drop hello",
+              "resilience: no update dropped - the queued message is "
+              "delivered after recovery")
+        updates = http_get(base + "/admin/updates").get("updates", [])
+        check(not any(u.get("update_id") == 9701 for u in updates),
+              "resilience: offset advanced only AFTER the update was handled "
+              "(9701 consumed)")
+        n = plat.expect_notification("plugin_status", timeout=25)
+        check(n.get("params", {}).get("status") == "ok",
+              "resilience: recovery -> plugin_status ok")
+        plat.stop()
+
+        # 14c. unreachable IPv6 endpoint: an IPv6 literal has no IPv4 address,
+        #      so the IPv4-only resolver fails IMMEDIATELY (no IPv6 connect
+        #      attempt, no Errno 101 stall) and the failed cycle ends within
+        #      the bounded budget.
+        plat = PlatformProc(env=tiny_env)
+        r = plat.call("configure", {"config": {
+            "bot_token": MOCK_TOKEN,
+            "api_base_url": "http://[2001:db8::1]:9",
+            "polling_enabled": True,
+            "poll_interval_secs": 1,
+        }})
+        check(r.get("result", {}).get("configured") is True,
+              "resilience: configure against an IPv6-only endpoint")
+        t0 = time.time()
+        n = plat.expect_notification("plugin_status", timeout=30)
+        t1 = time.time()
+        p = n.get("params", {})
+        check(p.get("status") == "degraded",
+              "resilience: IPv6-unreachable -> plugin_status degraded")
+        check(t1 - t0 < 12.0,
+              "resilience: IPv6-unreachable cycle bounded (%.1fs < 12s)"
+              % (t1 - t0))
+        plat.stop()
 
     finally:
         if plat:
