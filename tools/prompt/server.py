@@ -762,11 +762,39 @@ def _mini_yaml_parse(text):
     return root
 
 
+class TemplateError(Exception):
+    """A template reference is not a valid PROFILE template (operator
+    directive 2026-09-24: templates must be profile templates - resolving
+    anything else is a bug). Raised instead of silently degrading."""
+
+
+def validate_template_name(profile_name, template_name):
+    """Reject template names that escape the profile templates dir: path
+    separators, '..', absolute paths, empty names."""
+    name = str(template_name).strip()
+    if not name:
+        raise TemplateError(
+            f"template name is empty for profile '{profile_name}': expected a file name in profiles/{profile_name}/templates/"
+        )
+    p = Path(name)
+    if (
+        p.is_absolute()
+        or "/" in name
+        or "\\" in name
+        or ".." in name
+    ):
+        raise TemplateError(
+            f"template name '{template_name}' must be a plain file name inside profiles/{profile_name}/templates/ (no path separators, no '..', no absolute paths)"
+        )
+    return name
+
+
 def load_template(data_dir, profile_name, template_name):
     """Rust memory_store::load_template: profiles/<p>/templates/<name>(.md)."""
     if not template_name:
         return None
-    path = Path(data_dir) / "profiles" / profile_name / "templates" / template_name
+    name = validate_template_name(profile_name, template_name)
+    path = Path(data_dir) / "profiles" / profile_name / "templates" / name
     if path.suffix == "":
         path = path.with_suffix(".md")
     if not path.exists():
@@ -779,7 +807,13 @@ def load_template(data_dir, profile_name, template_name):
 
 def load_role_template(data_dir, profile_name, workflow_id, role):
     """Rust load_role_template: workflows.yml role template FILE NAME ->
-    content from profiles/<p>/templates/<name>.md."""
+    content from profiles/<p>/templates/<name>.md.
+
+    Returns None when the workflow/role is absent or the template field is
+    empty (no template configured). Raises TemplateError when the template
+    field IS set but the name is invalid or the file is missing - templates
+    must be PROFILE templates, never a silent fallback (operator directive
+    2026-09-24)."""
     try:
         text = read_file(Path(data_dir) / "workflows.yml")
         if not text:
@@ -792,7 +826,15 @@ def load_role_template(data_dir, profile_name, workflow_id, role):
         template_name = role_entry.get("template") if isinstance(role_entry, dict) else None
         if not template_name or not str(template_name).strip():
             return None
-        return load_template(data_dir, profile_name, str(template_name).strip())
+        name = validate_template_name(profile_name, str(template_name).strip())
+        content = load_template(data_dir, profile_name, name)
+        if content is None:
+            raise TemplateError(
+                f"workflow template '{name}' not found for profile '{profile_name}': expected profiles/{profile_name}/templates/{name}.md - templates must be profile templates"
+            )
+        return content
+    except TemplateError:
+        raise
     except Exception as e:
         log.warning("load_role_template failed: %s", e)
         return None
@@ -1237,6 +1279,10 @@ def handle_generate(req_id, arguments, meta):
                     system, user = apply_workflow_mapping(
                         system, user, user_message, wf[1], template
                     )
+            except TemplateError:
+                # A template reference that is not a valid PROFILE template is
+                # a hard error (operator directive 2026-09-24) - never swallow.
+                raise
             except Exception as e:
                 log.warning("workflow step lookup unavailable: %s", e)
 
