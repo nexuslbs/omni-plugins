@@ -627,8 +627,12 @@ def strip_frontmatter(content):
 
 
 def load_promoted_memories(data_dir, profile_name):
-    """Rust load_promoted_memories: wiki/Memory/Promoted/*.md, newest first."""
-    base = Path(data_dir) / "profiles" / profile_name / "wiki" / "Memory" / "Promoted"
+    """Read promoted memories from the SHARED wiki (<OMNI_DIR>/wiki).
+
+    The wiki is instance-level at the omni-dir root, not profile-scoped;
+    profile_name is kept for API compatibility only.
+    """
+    base = Path(data_dir) / "wiki" / "Memory" / "Promoted"
     memories = []
     if base.is_dir():
         for path in base.glob("*.md"):

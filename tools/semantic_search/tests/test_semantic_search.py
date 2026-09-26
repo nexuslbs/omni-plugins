@@ -219,7 +219,7 @@ def test_empty_index_degradation():
     empty = "semantic_search_empty_" + RUN_ID
     os.environ["COLLECTION"] = empty
     os.environ["QDRANT_URL"] = QDRANT_URL
-    os.environ["CORPUS_ROOTS"] = "profiles/{profile}/wiki"
+    os.environ["CORPUS_ROOTS"] = "wiki"
     result = server.handle_search({"query": "anything at all"}, {"profile_name": "test"})
     text = result["content"][0]["text"]
     check("empty index message", "index empty, run semantic_search_index" in text, text)

@@ -2,7 +2,7 @@
   "name": "semantic_search",
   "version": "0.1.0",
   "type": "mcp",
-  "description": "Local semantic search over the profile wiki AND the channel messages, backed by Qdrant. The plugin computes embeddings itself with a LOCAL vectorizer (feature-hashing by default, optional in-process fastembed/ONNX model) - no LLM and no embedding API is ever called. Provides semantic_search (wiki hits with provenance), semantic_search_index (idempotent wiki index), semantic_search__messages (message hits with channel/thread/author/date context), semantic_search_messages_index (read-only DB indexing) and stats tools.",
+  "description": "Local semantic search over the SHARED wiki (at the omni-dir root) AND the channel messages, backed by Qdrant. The plugin computes embeddings itself with a LOCAL vectorizer (feature-hashing by default, optional in-process fastembed/ONNX model) - no LLM and no embedding API is ever called. Provides semantic_search (wiki hits with provenance), semantic_search_index (idempotent wiki index), semantic_search__messages (message hits with channel/thread/author/date context), semantic_search_messages_index (read-only DB indexing) and stats tools.",
   "config_schema": [
     {
       "key": "qdrant_url",
@@ -29,8 +29,8 @@
       "key": "corpus_roots",
       "label": "Corpus Roots",
       "type": "string",
-      "default": "profiles/{profile}/wiki",
-      "description": "Comma-separated corpus roots, absolute or relative to OMNI_DIR. The placeholder {profile} resolves to the asking profile."
+      "default": "wiki",
+      "description": "Comma-separated corpus roots, absolute or relative to OMNI_DIR. The wiki is shared at the omni-dir root, so the default is 'wiki'."
     },
     {
       "key": "corpus_globs",

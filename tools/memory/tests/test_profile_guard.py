@@ -156,8 +156,8 @@ class ProfileGuardTest(unittest.TestCase):
             "_meta": {"profile_name": "omni"},
         })
         self.assertFalse(result["isError"], result)
-        promoted = (self.omni / "profiles" / "omni" / "wiki" / "Memory"
-                    / "Promoted" / "wire-mem.md")
+        promoted = (self.omni / "wiki" / "Memory" / "Promoted"
+                    / "wire-mem.md")
         self.assertTrue(promoted.exists(), f"expected {promoted}")
         self.assertIn("wire body", promoted.read_text())
         self.assertFalse((self.omni / "profiles" / "default").exists())
@@ -170,8 +170,8 @@ class ProfileGuardTest(unittest.TestCase):
             "meta": {"profile_name": "omni"},
         })
         self.assertFalse(result["isError"], result)
-        promoted = (self.omni / "profiles" / "omni" / "wiki" / "Memory"
-                    / "Promoted" / "legacy-mem.md")
+        promoted = (self.omni / "wiki" / "Memory" / "Promoted"
+                    / "legacy-mem.md")
         self.assertTrue(promoted.exists(), f"expected {promoted}")
         self.assertFalse((self.omni / "profiles" / "default").exists())
 
@@ -220,7 +220,7 @@ class ProfileGuardTest(unittest.TestCase):
         self.assertIn("new-entry", text)
         self.assertIn("legacy-entry", text, "legacy content must be carried over once")
 
-    # ── promote_to_memory writes the DECLARED profile's promoted dir ────────
+    # ── promote_to_memory writes the SHARED wiki promoted dir ────────
 
     def test_promote_to_memory_writes_declared_profile_promoted_dir(self):
         res = self.srv.handle_promote(
@@ -229,7 +229,7 @@ class ProfileGuardTest(unittest.TestCase):
         )
         self.assertFalse(res["isError"])
         promoted = (
-            self.omni / "profiles" / "omni" / "wiki" / "Memory" / "Promoted" / "my-mem.md"
+            self.omni / "wiki" / "Memory" / "Promoted" / "my-mem.md"
         )
         self.assertTrue(promoted.exists(), f"expected {promoted}")
         self.assertIn("fact body", promoted.read_text())

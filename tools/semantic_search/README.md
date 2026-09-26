@@ -28,7 +28,7 @@ CLI entrypoints (dev/deploy/CI, non-interactive):
 
 ```bash
 python3 server.py index [--rebuild]
-python3 server.py search "<query>" [--limit 10] [--path-filter profiles/omni/wiki]
+python3 server.py search "<query>" [--limit 10] [--path-filter wiki]
 python3 server.py stats
 python3 server.py messages-search "<query>" [--limit 10] [--channel omnidev] [--thread 1234] [--since 2026-09-01T00:00:00Z] [--until 2026-09-17T00:00:00Z]
 python3 server.py messages-index [--channels omnidev,main] [--since ISO] [--until ISO] [--limit N] [--rebuild]
@@ -63,7 +63,7 @@ runs):
 | `qdrant_url` | `$env:QDRANT_URL` (fallback `http://qdrant:6333`) | Qdrant HTTP API base URL |
 | `qdrant_api_key` | `$env:QDRANT_API_KEY` | optional `api-key` header |
 | `collection` | `wiki_semantic` | Qdrant collection |
-| `corpus_roots` | `profiles/{profile}/wiki` | comma-separated roots, absolute or relative to `OMNI_DIR`; `{profile}` resolves to the asking profile |
+| `corpus_roots` | `wiki` | comma-separated roots, absolute or relative to `OMNI_DIR`; the wiki is shared at the omni-dir root |
 | `corpus_globs` | `**/*.md` | comma-separated globs inside every root |
 | `embedding_backend` | `hash` | `hash` or `fastembed` |
 | `embedding_model` | `BAAI/bge-small-en-v1.5` | fastembed model (384 dims) |

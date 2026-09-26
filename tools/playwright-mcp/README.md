@@ -40,7 +40,7 @@ omniagent container.
 
 The verified recipe for authenticated web tasks (full flow, evidence and failure modes:
 `profiles/omni/skills/web-interaction/SKILL.md` and
-`profiles/omni/wiki/Reference/Omniagent/Playwright-MCP.md`).
+`wiki/Reference/Omniagent/Playwright-MCP.md`).
 
 **1. One storage-state file per site.** The wrapper reads `PW_STATE_FILE` and uses
 `/pw/state/<file>`; the same variable names the file the agent must write after login. Use one file
@@ -93,7 +93,7 @@ when the chown is not possible).
 ## Token cost (measured - see the wiki reference page)
 
 Tool schemas plus accessibility snapshots are the expensive part, not the browser. Rules of thumb
-(full numbers: `profiles/omni/wiki/Reference/Omniagent/Playwright-MCP.md`):
+(full numbers: `wiki/Reference/Omniagent/Playwright-MCP.md`):
 
 1. `fetch` / `web_extract` first - a plain HTTP GET is ~100x cheaper than a browser round trip.
 2. Use the browser only when the page needs JavaScript, forms, auth or a session.

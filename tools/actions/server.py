@@ -173,7 +173,9 @@ def collect_md_files(dirpath, entries, prefix):
 
 def handle_relevance(args, meta):
     omni_dir = get_omni_dir()
-    wiki_dir = Path(omni_dir) / "profiles" / DEFAULT_PROFILE / "wiki"
+    # The wiki is SHARED at the omni-dir root (<OMNI_DIR>/wiki), not
+    # profile-scoped.
+    wiki_dir = Path(omni_dir) / "wiki"
     if not wiki_dir.is_dir():
         return make_tool_result("No wiki directory found")
     entries = []

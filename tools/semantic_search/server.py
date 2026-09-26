@@ -106,8 +106,8 @@ def load_config(meta=None, args=None):
     if args.get("omni_dir"):
         omni_dir = str(args["omni_dir"])
     profile = get_profile(meta)
-    roots = args.get("paths") or split_list(cfg("corpus_roots", default="profiles/{profile}/wiki"),
-                                            ["profiles/{profile}/wiki"])
+    roots = args.get("paths") or split_list(cfg("corpus_roots", default="wiki"),
+                                            ["wiki"])
     globs = args.get("globs") or split_list(cfg("corpus_globs", default="**/*.md"), ["**/*.md"])
     return {
         "omni_dir": omni_dir,

@@ -3,7 +3,7 @@
 
 Tools:
   - promote_to_memory: promote a validated fact to long-term memory by
-             writing <OMNI_DIR>/profiles/<profile>/wiki/Memory/Promoted/<name>.md
+             writing <OMNI_DIR>/wiki/Memory/Promoted/<name>.md
              with frontmatter (type, confidence, source_message_ids,
              source_tool_outputs, last_verified_at, created_at, expires_at).
   - list_memories: list promoted memories (filenames, titles, confidence,
@@ -188,7 +188,10 @@ def get_profile(meta):
 
 
 def promoted_dir(profile):
-    return Path(get_omni_dir()) / "profiles" / profile / "wiki" / "Memory" / "Promoted"
+    # The wiki is SHARED at the omni-dir root (<OMNI_DIR>/wiki): promoted
+    # memories are instance-level, NOT profile-scoped. `profile` is kept in the
+    # signature for API compatibility but no longer selects the directory.
+    return Path(get_omni_dir()) / "wiki" / "Memory" / "Promoted"
 
 
 def memories_file(profile, target):
