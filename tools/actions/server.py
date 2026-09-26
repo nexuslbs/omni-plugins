@@ -6,7 +6,7 @@ Tools:
               (reads <OMNI_DIR>/hindsight_watermark.json, selects new messages
               from the messages table, advances the watermark).
   - relevance_indexer: update the wiki relevance index
-              (scans <OMNI_DIR>/profiles/omni/wiki for .md files, scores by
+              (scans <OMNI_DIR>/wiki for .md files, scores by
               mtime recency, writes relevant-index.md).
   - setup_knowledge_pipeline: create the knowledge pipeline schedule in
               <OMNI_DIR>/config/tasks.yml (idempotent).
