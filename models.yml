@@ -57,7 +57,7 @@ providers:
     supports_reasoning: true
     default_base_url: "https://opencode.ai/zen/go/v1"
     refresh_url: "https://opencode.ai/zen/go/v1/models"
-    default_model: "deepseek-v4-flash"
+    default_model: "deepseek-flash"
     api_key: "$secret:OPENCODE_API_KEY"
     # Custom request headers (typed values, resolved by core at request time):
     # x-opencode-session carries the current channel name so OpenCode Go can
